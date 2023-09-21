@@ -899,10 +899,16 @@ SUBROUTINE TRGTOL_CUDAAWARE(PGLAT,KF_FS,KF_GP,KF_SCALARS_G,KVSET,KPTRGP,&
   !USE MYSENDSET_MOD
   !USE MYRECVSET_MOD
   USE ABORT_TRANS_MOD ,ONLY : ABORT_TRANS
+  USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+  USE iso_c_binding   ,ONLY : c_null_char
   !
   
   IMPLICIT NONE
   
+  
+  INTEGER :: ret
   REAL(KIND=JPRBT),INTENT(OUT)   :: PGLAT(:,:)
   INTEGER(KIND=JPIM),INTENT(IN) :: KVSET(:)
   INTEGER(KIND=JPIM),INTENT(IN) :: KF_FS,KF_GP
@@ -965,6 +971,7 @@ SUBROUTINE TRGTOL_CUDAAWARE(PGLAT,KF_FS,KF_GP,KF_SCALARS_G,KVSET,KPTRGP,&
   !              --------------------
   
   IF (LHOOK) CALL DR_HOOK('TRGTOL',0,ZHOOK_HANDLE)
+  ret = roctxRangePushA("TRGTOL Init"//c_null_char)
   
   iunit=300+myproc
 
@@ -1222,7 +1229,10 @@ SUBROUTINE TRGTOL_CUDAAWARE(PGLAT,KF_FS,KF_GP,KF_SCALARS_G,KVSET,KPTRGP,&
 
   CALL GSTATS(1805,1)
  
+  call roctxRangePop()
+  call roctxMarkA("TRGTOL Init"//c_null_char)
   ! Send loop.............................................................
+  ret = roctxRangePushA("TRGTOL Send"//c_null_char)
   
   ! Copy local contribution
   
@@ -1306,7 +1316,10 @@ SUBROUTINE TRGTOL_CUDAAWARE(PGLAT,KF_FS,KF_GP,KF_SCALARS_G,KVSET,KPTRGP,&
     call MPI_BARRIER(MPI_COMM_WORLD,IERROR)
     Tc=TIMEF()
 #endif
+  call roctxRangePop()
+  call roctxMarkA("TRGTOL Send"//c_null_char)
   !....Pack loop.........................................................
+  ret = roctxRangePushA("TRGTOL Pack"//c_null_char)
   
   ISEND_FLD_START=1
   CALL GSTATS(1602,0)
@@ -1409,7 +1422,11 @@ SUBROUTINE TRGTOL_CUDAAWARE(PGLAT,KF_FS,KF_GP,KF_SCALARS_G,KVSET,KPTRGP,&
     call MPI_BARRIER(MPI_COMM_WORLD,IERROR)
     Tc=TIMEF()
 #endif
+  call roctxRangePop()
+  call roctxMarkA("TRGTOL Pack"//c_null_char)
+
   !  Receive loop.........................................................
+  ret = roctxRangePushA("TRGTOL Recv"//c_null_char)
   DO INR=1,INRECV
     IR=IR+1
     IRECV=JRECV(INR)
@@ -1451,7 +1468,10 @@ SUBROUTINE TRGTOL_CUDAAWARE(PGLAT,KF_FS,KF_GP,KF_SCALARS_G,KVSET,KPTRGP,&
   !  call MPI_BARRIER(MPI_COMM_WORLD,IERROR)
   !  Tc=TIMEF()
   !#endif
+  call roctxRangePop()
+  call roctxMarkA("TRGTOL Recv"//c_null_char)
   !  Unpack loop.........................................................
+  ret = roctxRangePushA("TRGTOL Unpack"//c_null_char)
   
   CALL GSTATS(1603,0)
 
@@ -1501,6 +1521,8 @@ ENDIF
   IF (IBUFLENR > 0) DEALLOCATE(ZCOMBUFR)
 
   IF (LHOOK) CALL DR_HOOK('TRGTOL',1,ZHOOK_HANDLE)
- 
+  call roctxRangePop()
+  call roctxMarkA("TRGTOL Unpack"//c_null_char)
+
   END SUBROUTINE TRGTOL
   END MODULE TRGTOL_MOD

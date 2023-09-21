@@ -31,6 +31,10 @@ MODULE LTDIR_MOD
   USE UPDSP_MOD   ,ONLY : UPDSP
    
   USE TPM_FIELDS  ,ONLY : ZAIA,ZOA1,ZOA2,ZEPSNM
+  USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+  USE iso_c_binding   ,ONLY : c_null_char
   
   !**** *LTDIR* - Control of Direct Legendre transform step
   
@@ -106,6 +110,7 @@ MODULE LTDIR_MOD
   
   
   !     DUMMY INTEGER SCALARS
+  INTEGER :: ret
   INTEGER(KIND=JPIM)  :: KM
   INTEGER(KIND=JPIM)  :: KMLOC
   INTEGER(KIND=JPIM),INTENT(IN)   :: KF_FS,KF_UV,KF_SCALARS,KLED2
@@ -127,7 +132,8 @@ MODULE LTDIR_MOD
   
   
   !call cudaProfilerStart
-  
+  ret = roctxRangePushA("LTDIR"//c_null_char)
+
   !     ------------------------------------------------------------------
   IF (LHOOK) CALL DR_HOOK('LTDIR_MOD',0,ZHOOK_HANDLE)
   
@@ -206,5 +212,7 @@ MODULE LTDIR_MOD
 
   
   !call cudaProfilerStop
+  CALL roctxRangePop()
+  CALL roctxMarkA("LTDIR"//c_null_char)
   END SUBROUTINE LTDIR
   END MODULE LTDIR_MOD

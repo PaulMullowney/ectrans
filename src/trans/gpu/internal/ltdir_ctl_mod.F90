@@ -56,9 +56,14 @@ MODULE LTDIR_CTL_MOD
 #endif
 
   USE TPM_FIELDS      ,ONLY : ZSIA,ZAIA,ZOA1,ZEPSNM
+  USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+  USE iso_c_binding   ,ONLY : c_null_char
  
   IMPLICIT NONE
- 
+  
+  INTEGER :: ret
   INTEGER(KIND=JPIM),INTENT(IN) :: KF_FS,KF_UV,KF_SCALARS
   REAL(KIND=JPRB) ,OPTIONAL, INTENT(OUT) :: PSPVOR(:,:)
   REAL(KIND=JPRB) ,OPTIONAL, INTENT(OUT) :: PSPDIV(:,:)
@@ -70,13 +75,16 @@ MODULE LTDIR_CTL_MOD
   INTEGER(KIND=JPIM),OPTIONAL,INTENT(IN) :: KFLDPTRSC(:)
  
   INTEGER(KIND=JPIM) :: JM,IM,IBLEN,ILED2
- 
+  ret = roctxRangePushA("LTDIR_CTL"//c_null_char)
+  ret = roctxRangePushA("LTDIR_CTL ALLOC"//c_null_char)
 #ifdef ACCGPU
   !$ACC DATA PRESENT(FOUBUF_IN) CREATE(FOUBUF)
 #endif
 #ifdef OMPGPU
   !$OMP TARGET DATA MAP(ALLOC:FOUBUF_IN,FOUBUF)
 #endif
+  CALL roctxRangePop()
+  CALL roctxMarkA("LTDIR_CTL ALLOC"//c_null_char)
 
   ! Transposition from Fourier space distribution to spectral space distribution
   ! requires currently both on the host !!!
@@ -88,6 +96,7 @@ MODULE LTDIR_CTL_MOD
   CALL TRLTOM_CUDAAWARE(FOUBUF_IN,FOUBUF,2*KF_FS)
 #else
   CALL TRLTOM(FOUBUF_IN,FOUBUF,2*KF_FS)
+  ret = roctxRangePushA("LTDIR_CTL COPYTO"//c_null_char)
 #ifdef ACCGPU
   !$ACC UPDATE DEVICE(FOUBUF)
 #endif
@@ -95,6 +104,8 @@ MODULE LTDIR_CTL_MOD
   !$OMP TARGET UPDATE TO(FOUBUF)
 #endif
 #endif
+  CALL roctxRangePop()
+  CALL roctxMarkA("LTDIR_CTL COPYTO"//c_null_char)
   CALL GSTATS(153,1)
  
   ! Direct Legendre transform
@@ -121,6 +132,8 @@ MODULE LTDIR_CTL_MOD
   CALL GSTATS(103,1)
  
   !     -----------------------------------------------------------------
+  CALL roctxRangePop()
+  CALL roctxMarkA("LTDIR_CTL"//c_null_char)
 
   END SUBROUTINE LTDIR_CTL
   END MODULE LTDIR_CTL_MOD

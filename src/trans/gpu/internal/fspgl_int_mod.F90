@@ -21,9 +21,15 @@ USE TPM_GEOMETRY    ,ONLY : G, G_NDGLU
 USE TPM_DISTR       ,ONLY : D,D_NUMP,D_MYMS,D_NASM0,D_NPROCL,D_NSTAGT0B,D_NPNTGTB0,D_NPNTGTB1
 USE TPM_FIELDS      ,ONLY : F
 USE ABORT_TRANS_MOD ,ONLY : ABORT_TRANS
-!
-
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                            roctxRangePop,&
+                            roctxMarkA
+USE iso_c_binding   ,ONLY : c_null_char
+ 
 IMPLICIT NONE
+
+INTEGER ret
+!
 
 INTEGER(KIND=JPIM) :: KM, KMLOC
 INTEGER(KIND=JPIM), INTENT(IN) :: KF_UV,KF_SCALARS,KF_SCDERS,KF_OUT_LT
@@ -46,6 +52,7 @@ INTEGER(KIND=JPIM) :: IPTRU,IST,J
 INTEGER(KIND=JPIM) :: IDGNH,IDGL
 INTEGER(KIND=JPIM) :: ISTAN(R%NDGNH),ISTAS(R%NDGNH)
 INTEGER(KIND=JPIM) :: IFLDPTRUV(KF_UV),IFLDPTRSC(KF_SCALARS)
+ret = roctxRangePushA("FSPGL_INT"//c_null_char)
 !     ------------------------------------------------------------------
 #ifdef ACCGPU
 !$ACC DATA IF(PRESENT(KFLDPTRUV)) COPYIN(KFLDPTRUV,KFLDPTRSC)
@@ -152,6 +159,7 @@ END DO
 !$ACC END DATA
 #endif
 !     ------------------------------------------------------------------
-
+CALL roctxRangePop()
+CALL roctxMarkA("FSPGL_INT"//c_null_char)
 END SUBROUTINE FSPGL_INT
 END MODULE FSPGL_INT_MOD

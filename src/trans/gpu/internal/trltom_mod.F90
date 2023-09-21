@@ -283,6 +283,10 @@ MODULE TRLTOM_MOD
   
   USE TPM_DISTR       ,ONLY : D, MTAGLM, MYSETW, NPRTRW, NPROC, MYPROC
   USE TPM_GEN         ,ONLY : LSYNC_TRANS
+  USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+  USE iso_c_binding   ,ONLY : c_null_char
   
   !USE SET2PE_MOD
   !USE MYSENDSET_MOD
@@ -292,6 +296,7 @@ MODULE TRLTOM_MOD
   
   IMPLICIT NONE
   
+  INTEGER :: ret
   INTEGER(KIND=JPIM),INTENT(IN)  :: KFIELD
   REAL(KIND=JPRBT)   ,INTENT(INOUT)  :: PFBUF(:)
   REAL(KIND=JPRBT)   ,INTENT(INOUT)  :: PFBUF_IN(:)
@@ -314,6 +319,7 @@ MODULE TRLTOM_MOD
   INTEGER(KIND=JPIM) :: IRANK,iunit
 
   IF (LHOOK) CALL DR_HOOK('TRLTOM',0,ZHOOK_HANDLE)
+  ret = roctxRangePushA("TRLTOM"//c_null_char)
  
   ITAG = MTAGLM
  
@@ -343,6 +349,8 @@ MODULE TRLTOM_MOD
   ENDIF
  
   IF (LHOOK) CALL DR_HOOK('TRLTOM',1,ZHOOK_HANDLE)
+  call roctxRangePop()
+  call roctxMarkA("TRLTOM"//c_null_char)
   !     ------------------------------------------------------------------
   END SUBROUTINE TRLTOM
   END MODULE TRLTOM_MOD

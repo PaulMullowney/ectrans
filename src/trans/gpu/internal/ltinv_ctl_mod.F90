@@ -68,9 +68,15 @@ MODULE LTINV_CTL_MOD
   USE TRMTOL_MOD    ,ONLY : TRMTOL_CUDAAWARE
 #else
   USE TRMTOL_MOD    ,ONLY : TRMTOL
-#endif  
+#endif
+  USE GSTATS_WRAPPER_MOD
+  USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+  USE iso_c_binding   ,ONLY : c_null_char
+  
   IMPLICIT NONE
- 
+  INTEGER :: ret
   INTEGER(KIND=JPIM),INTENT(IN) :: KF_OUT_LT,KF_UV,KF_SCALARS,KF_SCDERS
   REAL(KIND=JPRB) ,OPTIONAL, INTENT(IN)  :: PSPVOR(:,:)
   REAL(KIND=JPRB) ,OPTIONAL, INTENT(IN)  :: PSPDIV(:,:)
@@ -84,7 +90,7 @@ MODULE LTINV_CTL_MOD
   OPTIONAL  FSPGL_PROC
  
   INTEGER(KIND=JPIM) :: JM,IM,IBLEN,ILEI2,IDIM1, i, j
- 
+  ret = roctxRangePushA("LTINV_CTL"//c_null_char)
 #ifdef ACCGPU
   !$ACC DATA CREATE(FOUBUF_IN) PRESENT(FOUBUF)
 #endif
@@ -137,8 +143,8 @@ MODULE LTINV_CTL_MOD
 #ifdef OMPGPU
   !$OMP END TARGET DATA
 #endif
-
-  !     ------------------------------------------------------------------
- 
+  CALL roctxRangePop()
+  CALL roctxMarkA("LTINV_CTL"//c_null_char)
+  !     ------------------------------------------------------------------ 
   END SUBROUTINE LTINV_CTL
   END MODULE LTINV_CTL_MOD
