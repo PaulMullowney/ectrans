@@ -43,11 +43,16 @@ USE PARKIND_ECTRANS ,ONLY : JPIM     ,JPRBT
 USE TPM_DISTR       ,ONLY : D, MYSETW, MYPROC, NPROC, D_NPTRLS,D_NSTAGTF,D_MSTABF,D_NSTAGT1B,D_NPNTGTB0,D_NPROCM, D_NPROCL
 USE TPM_TRANS       ,ONLY : FOUBUF_IN, ZGTF
 USE TPM_GEOMETRY    ,ONLY : G, G_NMEN,G_NMEN_MAX
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                            roctxRangePop,&
+                            roctxMarkA
+USE iso_c_binding   ,ONLY : c_null_char
 !
 
 IMPLICIT NONE
 
 !REAL(KIND=JPRBT), INTENT(IN) :: PREEL(:,:)
+  INTEGER :: ret
 INTEGER(KIND=JPIM),INTENT(IN) :: KFIELDS
 INTEGER(KIND=JPIM) :: KGL
 
@@ -56,6 +61,7 @@ INTEGER(KIND=JPIM) :: JM,JF,IGLG,IPROC,IR,II,ISTA, ISTA1,JMMAX, iunit
 INTEGER(KIND=JPIM) :: IBEG,IEND,IINC, IOFF,iimax1,iimax2,iimax3
 
 !     ------------------------------------------------------------------
+ret = roctxRangePushA("FOURIER_OUT"//c_null_char)
 
 IF(MYPROC > NPROC/2)THEN
   IBEG=1
@@ -113,6 +119,8 @@ END DO
 #endif
 
 !     ------------------------------------------------------------------
+CALL roctxRangePop()
+CALL roctxMarkA("FOURIER_OUT"//c_null_char)
 
 END SUBROUTINE FOURIER_OUT
 END MODULE FOURIER_OUT_MOD

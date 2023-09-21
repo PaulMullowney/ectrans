@@ -19,6 +19,10 @@ USE TPM_TRANS       ,ONLY : FOUBUF_IN
 USE TPM_GEOMETRY    ,ONLY : G, G_NDGLU
 USE TPM_DISTR       ,ONLY : D,D_NUMP,D_MYMS,D_NSTAGT0B,D_NSTAGT1B,D_NPROCL,D_NPNTGTB1
 USE TPM_GEN         ,ONLY : NOUT
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                            roctxRangePop,&
+                            roctxMarkA
+USE iso_c_binding   ,ONLY : c_null_char
 
 !**** *ASRE1B* - Recombine antisymmetric and symmetric parts
 
@@ -67,6 +71,7 @@ USE TPM_GEN         ,ONLY : NOUT
 
 IMPLICIT NONE
 
+INTEGER :: ret
 INTEGER(KIND=JPIM), INTENT(IN) :: KFIELD
 INTEGER(KIND=JPIM) :: KM,KMLOC
 REAL(KIND=JPRBT),   INTENT(IN)  :: PSOA(:,:,:)
@@ -77,6 +82,7 @@ REAL(KIND=JPRBT),   INTENT(IN)  :: PAOA(:,:,:)
 !     LOCAL INTEGERS
 INTEGER(KIND=JPIM) :: ISL, IGLS, JFLD, JGL ,IPROC, IPROCS, IDGNH, ISTAN, ISTAS
 
+ret = roctxRangePushA("ASRE1B"//c_null_char)
 !     ------------------------------------------------------------------
 
 !*       1.    RECOMBINATION  OF SYMMETRIC AND ANTSYMMETRIC PARTS.
@@ -120,6 +126,8 @@ ENDDO
 #endif
 
 !     ------------------------------------------------------------------
+CALL roctxRangePop()
+CALL roctxMarkA("ASRE1B"//c_null_char)
 
 END SUBROUTINE ASRE1B
 END MODULE ASRE1B_MOD

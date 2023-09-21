@@ -83,13 +83,17 @@ USE FIELD_SPLIT_MOD ,ONLY : FIELD_SPLIT
 USE LTDIR_CTL_MOD   ,ONLY : LTDIR_CTL
 USE FTDIR_CTL_MOD   ,ONLY : FTDIR_CTL
 USE TPM_TRANS       ,ONLY : ZGTF
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                            roctxRangePop,&
+                            roctxMarkA
+USE iso_c_binding   ,ONLY : c_null_char
 !USE NVTX
 !
 
 IMPLICIT NONE
 
 ! Declaration of arguments
-
+INTEGER :: ret
 INTEGER(KIND=JPIM), INTENT(IN) :: KF_UV_G
 INTEGER(KIND=JPIM), INTENT(IN) :: KF_SCALARS_G
 INTEGER(KIND=JPIM), INTENT(IN) :: KF_GP
@@ -122,6 +126,7 @@ INTEGER(KIND=JPIM) :: IBLKS,JBLK,ISTUV_G,IENUV_G
 INTEGER(KIND=JPIM) :: IF_UV_G,IF_UV,ISTUV,IF_SCALARS,IF_SCALARS_G,IF_FS,IF_GP
 INTEGER(KIND=JPIM) :: JFLD,ISTSC_G,IENSC_G,ISTSC,IENSC,IENUV,IF_GPB
 
+ret = roctxRangePushA("DIR_TRANS_CTL"//c_null_char)
 
 !     ------------------------------------------------------------------
 
@@ -302,6 +307,8 @@ ELSE
 ENDIF
 
 !     ------------------------------------------------------------------
+call roctxRangePop()
+call roctxMarkA("DIR_TRANS_CTL"//c_null_char)
 
 END SUBROUTINE DIR_TRANS_CTL
 END MODULE DIR_TRANS_CTL_MOD

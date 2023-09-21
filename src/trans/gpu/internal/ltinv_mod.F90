@@ -34,6 +34,10 @@ MODULE LTINV_MOD
   USE FSPGL_INT_MOD   ,ONLY : FSPGL_INT
   USE ABORT_TRANS_MOD ,ONLY : ABORT_TRANS
   USE IEEE_ARITHMETIC
+  USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+  USE iso_c_binding   ,ONLY : c_null_char
   !USE TPM_FIELDS      ,ONLY : F,ZIA,ZSOA1,ZAOA1,ISTAN,ISTAS,ZEPSNM
   USE TPM_FIELDS      ,ONLY : F,ZIA,ZSOA1,ZAOA1
   
@@ -105,6 +109,7 @@ MODULE LTINV_MOD
   END INTERFACE
  
  
+  INTEGER :: ret
   INTEGER(KIND=JPIM), INTENT(IN) :: KF_OUT_LT
   INTEGER(KIND=JPIM), INTENT(IN) :: KF_UV
   INTEGER(KIND=JPIM), INTENT(IN) :: KF_SCALARS
@@ -148,6 +153,7 @@ MODULE LTINV_MOD
   !                 --------------------------
 
   !WRITE(CLHOOK,FMT='(A,I4.4)') 'LTINV_',KM
+  ret = roctxRangePushA("LTINV"//c_null_char)
   IF (LHOOK) CALL DR_HOOK('LTINV_MOD',0,ZHOOK_HANDLE)
 
   !     ------------------------------------------------------------------
@@ -366,6 +372,8 @@ MODULE LTINV_MOD
   !     ------------------------------------------------------------------
  
   !call cudaProfilerStop
+  CALL roctxRangePop()
+  CALL roctxMarkA("LTINV"//c_null_char)
  
   END SUBROUTINE LTINV
 END MODULE LTINV_MOD

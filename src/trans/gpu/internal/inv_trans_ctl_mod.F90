@@ -94,13 +94,17 @@ USE SHUFFLE_MOD     ,ONLY : SHUFFLE
 USE FIELD_SPLIT_MOD ,ONLY : FIELD_SPLIT
 USE LTINV_CTL_MOD   ,ONLY : LTINV_CTL
 USE FTINV_CTL_MOD   ,ONLY : FTINV_CTL
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                            roctxRangePop,&
+                            roctxMarkA
+USE iso_c_binding   ,ONLY : c_null_char
 !use nvtx
 !
 
 IMPLICIT NONE
 
 ! Declaration of arguments
-
+INTEGER :: ret
 INTEGER(KIND=JPIM), INTENT(IN) :: KF_UV_G
 INTEGER(KIND=JPIM), INTENT(IN) :: KF_SCALARS_G
 INTEGER(KIND=JPIM), INTENT(IN) :: KF_GP
@@ -141,6 +145,7 @@ INTEGER(KIND=JPIM) :: IOFFD,IOFFU,IOFFV,IOFFUVD,IOFFSC,IOFFSCNS,IOFFSCEW,IOFF,IF
 !     ------------------------------------------------------------------
 
 ! Perform transform
+ret = roctxRangePushA("INV_TRANS_CTL"//c_null_char)
 
 IF_GPB = 2*KF_UV_G+KF_SCALARS_G
 IF(NPROMATR > 0 .AND. IF_GPB > NPROMATR) THEN
@@ -314,6 +319,8 @@ ELSE
 
 ENDIF
 
+call roctxRangePop()
+call roctxMarkA("INV_TRANS_CTL"//c_null_char)
 !     ------------------------------------------------------------------
 
 END SUBROUTINE INV_TRANS_CTL
