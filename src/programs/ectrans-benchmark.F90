@@ -1391,6 +1391,10 @@ subroutine gstats_labels
   call gstats_label(157, '   ', 'FTINV_CTL      - L to G transposition')
   call gstats_label(158, '   ', 'FTDIR_CTL      - G to L transposition')
   call gstats_label(400, '   ', 'GSTATS         - GSTATS itself')
+  call gstats_label(430, '   ', 'DIR COPIES')
+  call gstats_label(431, '   ', 'INV COPIES')
+  call gstats_label(440, '   ', 'DIR_TRANS      - Direct transform')
+  call gstats_label(441, '   ', 'INV_TRANS      - Inverse transform')
 
 end subroutine gstats_labels
 
