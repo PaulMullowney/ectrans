@@ -71,6 +71,10 @@ USE TRGTOL_MOD      ,ONLY : TRGTOL
 USE FOURIER_OUT_MOD ,ONLY : FOURIER_OUT
 USE FTDIR_MOD       ,ONLY : FTDIR
 use ieee_arithmetic
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                            roctxRangePop,&
+                            roctxMarkA
+USE iso_c_binding   ,ONLY : c_null_char
 !
 IMPLICIT NONE
 
@@ -90,6 +94,8 @@ INTERFACE
 END INTERFACE
 
 ! Dummy arguments
+
+INTEGER :: ret
 INTEGER(KIND=JPIM),INTENT(IN) :: KF_UV_G,KF_SCALARS_G,KF_GP,KF_FS
 INTEGER(KIND=JPIM) ,OPTIONAL, INTENT(IN) :: KVSETUV(:)
 INTEGER(KIND=JPIM) ,OPTIONAL, INTENT(IN) :: KVSETSC(:)
@@ -119,6 +125,7 @@ INTEGER(KIND=JPIM) :: ISIZE,IFIELDS,ICHUNK,ICHUNKS,JK
 ! Field distribution in Spectral/Fourier space
 
 !call cudaProfilerStart()
+ret = roctxRangePushA("FTDIR_CTL"//c_null_char)
 
 IF(PRESENT(KVSETUV)) THEN
   IVSETUV(:) = KVSETUV(:)
@@ -259,6 +266,8 @@ CALL GSTATS(1640,1)
 CALL GSTATS(106,1)
 !     ------------------------------------------------------------------
 !call cudaProfilerStop()
+call roctxRangePop()
+call roctxMarkA("FTDIR_CTL"//c_null_char)
 END SUBROUTINE FTDIR_CTL
 END MODULE FTDIR_CTL_MOD
 

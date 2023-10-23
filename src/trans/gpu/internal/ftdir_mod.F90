@@ -56,10 +56,14 @@ USE TPM_FFTH        ,ONLY : CREATE_PLAN_FFT, EXECUTE_PLAN_FFT
 USE TPM_DIM         ,ONLY : R,R_NNOEXTZL
 USE HIP_DEVICE_MOD
 USE ISO_C_BINDING
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                            roctxRangePop,&
+                            roctxMarkA
 !
 
 IMPLICIT NONE
 
+INTEGER :: ret
 INTEGER(KIND=JPIM),INTENT(IN)  :: KFIELDS
 INTEGER(KIND=JPIM)  :: KGL
 !!!REAL(KIND=JPRBT), INTENT(INOUT) :: PREEL(KFIELDS,D%NLENGTF)
@@ -77,6 +81,7 @@ integer :: istat, idev
 REAL(KIND=JPRBT), ALLOCATABLE :: ZGTF2(:,:)
 
 !     ------------------------------------------------------------------
+ret = roctxRangePushA("FTDIR_MOD ALLOC"//c_null_char)
 
 IF(MYPROC > NPROC/2)THEN
   IBEG=1
@@ -102,6 +107,9 @@ ALLOCATE(ZGTF2(IDIM1,IDIM2))
 !$OMP TARGET DATA MAP(ALLOC:ZGTF2)
 #endif
 
+call roctxRangePop()
+call roctxMarkA("FTDIR_MOD ALLOC"//c_null_char)
+ret = roctxRangePushA("FTDIR_MOD FFT"//c_null_char)
 
 DO KGL=IBEG,IEND,IINC
   IOFF=D_NSTAGTF(KGL)+1
@@ -112,6 +120,10 @@ DO KGL=IBEG,IEND,IINC
 END DO
 
 ISTAT = HIP_SYNCHRONIZE()
+
+call roctxRangePop()
+call roctxMarkA("FTDIR_MOD FFT"//c_null_char)
+ret = roctxRangePushA("FTDIR_MOD COPY"//c_null_char)
 
 #ifdef OMPGPU
 !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(IGLG,JJ) DEFAULT(NONE) &
@@ -127,6 +139,10 @@ DO JJ=1, IDIM2
     ZGTF(JF,JJ) = ZGTF2(JF, JJ)
   ENDDO
 ENDDO
+call roctxRangePop()
+call roctxMarkA("FTDIR_MOD COPY"//c_null_char)
+ret = roctxRangePushA("FTDIR_MOD FINAL"//c_null_char)
+!WRITE(*,*)"IMAX=",IMAX," KFIELDS=",KFIELDS," IBEG+OFFSET_VAR-1=",IBEG+OFFSET_VAR-1," IEND+OFFSET_VAR-1=",IEND+OFFSET_VAR-1, " R_NNOEXTZL=",R_NNOEXTZL
 
 #ifdef OMPGPU
 !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) PRIVATE(JMAX,KGL,IOFF,SCAL,IST) DEFAULT(NONE) &
@@ -142,17 +158,17 @@ DO IGLG=IBEG+OFFSET_VAR-1,IEND+OFFSET_VAR-1,IINC
       DO JF=1,KFIELDS
          JMAX = G_NLOEN(IGLG)
          IST  = 2*(G_NMEN(IGLG)+1)
-         IF (JJ .LE. JMAX) THEN
+         IF( JJ .LE. JMAX) THEN
            KGL=IGLG-OFFSET_VAR+1
            IOFF=D_NSTAGTF(KGL)+1
-           SCAL = 1._JPRBT/REAL(G_NLOEN(IGLG),JPRBT)
+           SCAL = 1._JPRBT/REAL(JMAX,JPRBT)
            ZGTF(JF,IOFF+JJ-1)= SCAL * ZGTF(JF, IOFF+JJ-1)
-         END IF
+         ENDIF
 
          ! case JJ>0
          IF( JJ .LE. (JMAX+R_NNOEXTZL+2-IST)) ZGTF(JF,IST+IOFF+JJ-1) = 0.0_JPRBT
          ! case JJ=0
-         IF (G_NLOEN(IGLG)==1) ZGTF(JF,IST+IOFF-1) = 0.0_JPRBT
+         IF (JMAX==1) ZGTF(JF,IST+IOFF-1) = 0.0_JPRBT
       ENDDO
    ENDDO
 ENDDO
@@ -166,6 +182,8 @@ ENDDO
 #endif
 DEALLOCATE(ZGTF2)
 !     ------------------------------------------------------------------
+call roctxRangePop()
+call roctxMarkA("FTDIR_MOD FINAL"//c_null_char)
 
 END SUBROUTINE FTDIR
 END MODULE FTDIR_MOD

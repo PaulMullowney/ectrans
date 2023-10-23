@@ -19,6 +19,10 @@ MODULE PRFI1B_MOD
   USE TPM_DISTR ,ONLY : D,D_NUMP,D_MYMS,D_NASM0
   USE TPM_FIELDS      ,ONLY : ZIA
   USE IEEE_ARITHMETIC
+  USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+  USE iso_c_binding   ,ONLY : c_null_char
   
   !**** *PRFI1* - Prepare spectral fields for inverse Legendre transform
   
@@ -65,6 +69,7 @@ MODULE PRFI1B_MOD
   
   IMPLICIT NONE
   
+  INTEGER :: ret
   INTEGER(KIND=JPIM),INTENT(IN)   :: KFIRST
   INTEGER(KIND=JPIM),INTENT(IN)   :: KFIELDS
   INTEGER(KIND=JPIM) :: KM,KMLOC
@@ -80,6 +85,7 @@ MODULE PRFI1B_MOD
   
   !*       1.    EXTRACT FIELDS FROM SPECTRAL ARRAYS.
   !              --------------------------------------------------
+  ret = roctxRangePushA("PRFI1B"//c_null_char)
 
 #ifdef ACCGPU
   !$ACC DATA &
@@ -219,6 +225,8 @@ MODULE PRFI1B_MOD
 
 
   !     ------------------------------------------------------------------
+  CALL roctxRangePop()
+  CALL roctxMarkA("PRFI1B"//c_null_char)
  
   END SUBROUTINE PRFI1B
 END MODULE PRFI1B_MOD
