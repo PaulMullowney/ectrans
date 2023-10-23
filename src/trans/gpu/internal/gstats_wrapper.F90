@@ -11,39 +11,19 @@ MODULE GSTATS_WRAPPER_MOD
   USE hip_profiling   ,ONLY : roctxRangePushA,&
                               roctxRangePop,&
                               roctxMarkA
-  USE iso_c_binding   ,ONLY : C_CHAR
+  USE iso_c_binding   ,ONLY : C_CHAR, c_null_char
   IMPLICIT NONE
   INTEGER :: ret
   INTEGER(KIND=JPIM),INTENT(IN) :: KNUM
   INTEGER(KIND=JPIM),INTENT(IN) :: KSWITCH
   CHARACTER(C_CHAR) :: LABEL(*)
-!   INTEGER(KIND=JPIB) :: INUM
-!   CHARACTER(LEN=32), SAVE :: CCDESC_BARR(JPMAXSTAT)
-!   CHARACTER(LEN=32), SAVE :: CCDESC_DRHOOK(JPMAXSTAT)
-
-!   IF(LGSTATS_LABEL)THEN
-!     DO INUM=1,JPMAXSTAT
-!       WRITE(CC,'(I4)')INUM
-!       CCDESC_BARR(INUM)='>BAR-'//CCDESC(INUM)(1:21)//'('//CC//')'
-!     ENDDO
-!     DO INUM=1,JPMAXSTAT
-!       WRITE(CC,'(I4)')INUM
-! !     write(6,*) inum,cctype(inum)
-!       IF(CCTYPE(INUM).EQ."TRS".OR.CCTYPE(INUM).EQ.'MP-'.OR.CCTYPE(INUM).EQ.'MPL'&
-!                             & .OR.CCTYPE(INUM).EQ.'BAR'.OR.CCTYPE(INUM).EQ.'OMP') THEN
-!         CCDESC_DRHOOK(INUM)='>'//CCTYPE(INUM)//'-'//CCDESC(INUM)(1:21)//'('//CC//')'
-!       ENDIF
-!     ENDDO
-!     LGSTATS_LABEL=.FALSE.
-!   ENDIF
 
   CALL GSTATS(KNUM,KSWITCH)
-  WRITE(*,*) KNUM, KSWITCH
-  IF (KNUM > 0) THEN
+  IF (KSWITCH > 0) THEN
      CALL roctxRangePop()
-     CALL roctxMarkA(LABEL)
+     CALL roctxMarkA(CCDESC(KNUM))
   ELSE
-     ret = roctxRangePushA(LABEL)
+     ret = roctxRangePushA(CCDESC(KNUM))
   ENDIF
 
 
