@@ -57,6 +57,10 @@ USE TPM_DISTR,       ONLY : D, D_NUMP, D_MYMS
 USE TPM_DIM,         ONLY : R, R_NDGNH, R_NDGL
 USE TPM_GEOMETRY,    ONLY : G, G_NDGLU
 USE ABORT_TRANS_MOD  ,ONLY : ABORT_TRANS
+USE hip_profiling   ,ONLY : roctxRangePushA,&
+                              roctxRangePop,&
+                              roctxMarkA
+USE iso_c_binding   ,ONLY : c_null_char
 
 IMPLICIT NONE
 
@@ -66,14 +70,14 @@ REAL(KIND=JPRBT), INTENT(INOUT) :: P_FOURIER_FIELDS(:,:,:)
 
 !     LOCAL INTEGER SCALARS
 INTEGER(KIND=JPIM) :: J, JGL, ISL, KM, KMLOC
+INTEGER :: ret
 
 !     ------------------------------------------------------------------
 
 !*       1.    DIVIDE U V BY A*COS(THETA)
 !              --------------------------
-
+ret = roctxRangePushA("LDFOU2"//c_null_char)
 IF (KF_UV > 0) THEN
-
 #ifdef OMPGPU
   !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
   !$OMP& PRIVATE(KMLOC,JGL,J,KM,ISL) MAP(TO:KF_UV,F_RACTHE,D_MYMS,G_NDGLU,P_FOURIER_FIELDS) &
@@ -96,6 +100,8 @@ IF (KF_UV > 0) THEN
      ENDDO
   ENDDO
 ENDIF
+call roctxRangePop()
+call roctxMarkA("LDFOU2"//c_null_char)
 
 !     ------------------------------------------------------------------
 
