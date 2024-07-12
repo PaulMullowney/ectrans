@@ -91,6 +91,7 @@ foreach( prec dp sp )
                                $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/algor/interface>
                                $<INSTALL_INTERFACE:include/ectrans>
                                $<INSTALL_INTERFACE:include>
+			       ${ECTRANS_GPU_HIP_INCLUDES}
           PUBLIC_LIBS          parkind_${prec}
                                fiat
           PRIVATE_LIBS         ${ECTRANS_GPU_HIP_LIBRARIES}

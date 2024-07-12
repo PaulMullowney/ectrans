@@ -49,6 +49,11 @@ hicfft_create_plan_(hipfftHandle * *plan, int *ISIGNp, int *Np, int *LOTp)
 
     fftSafeCall(hipfftCreate(*plan));
 
+    if (ISIGN == -1)
+      printf("R2C : N(nloen)=%d, embed=%d, stride=%d, dist=%d, LOT=%d\n",N,embed[0],stride,dist,LOT);
+    else
+      printf("C2R : N(nloen)=%d, embed=%d, stride=%d, dist=%d, LOT=%d\n",N,embed[0],stride,dist,LOT);
+
     if( ISIGN== -1 ){
       fftSafeCall(hipfftPlanMany(*plan, 1, &N,
                     embed, stride, dist,

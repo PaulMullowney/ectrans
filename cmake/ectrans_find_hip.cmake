@@ -110,10 +110,13 @@ macro( ectrans_find_hip )
     if( HAVE_HIP )
       list( APPEND ECTRANS_GPU_HIP_LIBRARIES ${hipblas_LIBRARIES} ${hipfft_LIBRARIES})
       list( APPEND ECTRANS_GPU_HIP_LIBRARIES ${rocblas_LIBRARIES} ${rocfft_LIBRARIES})
+      list( APPEND ECTRANS_GPU_HIP_INCLUDES ${hipblas_INCLUDE_DIRS}/hipblas ${hipfft_INCLUDE_DIRS}/hipfft)
+      list( APPEND ECTRANS_GPU_HIP_INCLUDES ${rocblas_INCLUDE_DIRS}/rocblas ${rocfft_INCLUDE_DIRS}/rocfft)
     endif()
 
   endif()
   ecbuild_info("HIP libraries: ${ECTRANS_GPU_HIP_LIBRARIES}")
+  ecbuild_info("HIP includes: ${ECTRANS_GPU_HIP_INCLUDES}")
 endmacro()
 
 macro( ectrans_declare_hip_sources )
