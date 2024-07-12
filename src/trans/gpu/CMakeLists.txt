@@ -94,7 +94,11 @@ foreach( prec dp sp )
                                $<${HAVE_3XTF32}:USE_3XTF32>
 			       $<${HAVE_GPU_GRAPHS_GEMM}:USE_GRAPHS_GEMM>
         )
-
+       target_include_directories( trans_gpu_${prec} SYSTEM PUBLIC
+          ${ROCM_PATH}/include ${ROCM_PATH}/include
+          ${ROCM_PATH}/include/hipfft ${ROCM_PATH}/include/hipblas
+          ${ROCM_PATH}/include/rocblas )
+	  
         ectrans_target_fortran_module_directory(
           TARGET            trans_gpu_${prec}
           MODULE_DIRECTORY  ${PROJECT_BINARY_DIR}/module/trans_gpu_${prec}
