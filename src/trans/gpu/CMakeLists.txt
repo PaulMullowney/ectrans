@@ -192,7 +192,7 @@ foreach( prec dp sp )
         ecbuild_add_library( TARGET trans_gpu_${prec} TYPE INTERFACE )
         target_include_directories( trans_gpu_${prec} INTERFACE $<BUILD_INTERFACE:${BUILD_INTERFACE_INCLUDE_DIR}/trans_gpu_${prec}> )
         target_include_directories( trans_gpu_${prec} INTERFACE $<INSTALL_INTERFACE:include/ectrans/trans_gpu_${prec}> )
-        target_link_libraries( trans_gpu_${prec} INTERFACE fiat ectrans_gpu_${prec} parkind_${prec})
+        target_link_libraries( trans_gpu_${prec} INTERFACE fiat ectrans_gpu_${prec} parkind_${prec} "-L${ROCM_PATH}/lib -lroctracer64" "-L${ROCM_PATH}/lib -lroctx64")
 
 
         # ## Install trans_gpu_${prec} interface

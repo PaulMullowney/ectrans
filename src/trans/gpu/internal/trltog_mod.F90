@@ -121,10 +121,11 @@ CONTAINS
     USE TPM_STATS,              ONLY: GSTATS => GSTATS_NVTX
     USE TPM_TRANS,              ONLY: LDIVGP, LSCDERS, LUVDER, LVORGP, NPROMA
     USE BUFFERED_ALLOCATOR_MOD, ONLY: BUFFERED_ALLOCATOR, ASSIGN_PTR, GET_ALLOCATION
-    USE ISO_C_BINDING,          ONLY: C_SIZE_T
+    USE ISO_C_BINDING,          ONLY: C_SIZE_T, C_NULL_CHAR
     USE OPENACC_EXT,            ONLY: EXT_ACC_ARR_DESC, EXT_ACC_PASS, EXT_ACC_CREATE, &
       &                               EXT_ACC_DELETE
     USE OPENACC,                ONLY: ACC_HANDLE_KIND
+    USE HIP_PROFILING,          ONLY: ROCTXRANGEPUSHA, ROCTXRANGEPOP, ROCTXMARKA
 
     IMPLICIT NONE
 
@@ -132,7 +133,7 @@ CONTAINS
   include 'mpif.h'
 #endif
 
-
+    INTEGER :: RET
     REAL(KIND=JPRBT),  INTENT(INOUT), POINTER  :: PREEL_REAL(:)
     INTEGER(KIND=JPIM),INTENT(IN)  :: KF_FS,KF_GP
     INTEGER(KIND=JPIM),INTENT(IN)  :: KF_UV_G, KF_SCALARS_G
@@ -700,6 +701,7 @@ CONTAINS
 
     IR=0
     !...Receive loop.........................................................
+    RET = roctxRangePushA("TRLTOG: RECEIVE LOOP"//C_NULL_CHAR)
 #ifdef USE_GPU_AWARE_MPI
 #ifdef OMPGPU
 #endif
@@ -767,6 +769,9 @@ CONTAINS
     !$ACC DATA PRESENT(ZCOMBUFR) IF(IRECV_COUNTS > 0) ASYNC(1)
 #endif
     CALL GSTATS(805,1)
+
+    call roctxRangePop()
+    call roctxMarkA("TRLTOG: RECEIVE LOOP"//C_NULL_CHAR)
 
     !  Unpack loop.........................................................
 

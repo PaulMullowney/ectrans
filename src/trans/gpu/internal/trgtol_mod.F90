@@ -119,15 +119,16 @@ CONTAINS
 #endif
     USE TPM_STATS,              ONLY: GSTATS => GSTATS_NVTX
     USE TPM_TRANS,              ONLY: NPROMA
-    USE ISO_C_BINDING,          ONLY: C_SIZE_T, C_FLOAT, C_DOUBLE, C_INT8_T
+    USE ISO_C_BINDING,          ONLY: C_SIZE_T, C_FLOAT, C_DOUBLE, C_INT8_T, C_NULL_CHAR
     USE BUFFERED_ALLOCATOR_MOD, ONLY: BUFFERED_ALLOCATOR, ASSIGN_PTR, GET_ALLOCATION
     USE OPENACC_EXT,            ONLY: EXT_ACC_ARR_DESC, EXT_ACC_PASS, EXT_ACC_CREATE, &
       &                               EXT_ACC_DELETE
     USE OPENACC,                ONLY: ACC_HANDLE_KIND
     USE ABORT_TRANS_MOD,        ONLY: ABORT_TRANS
-
+    USE HIP_PROFILING,          ONLY: ROCTXRANGEPUSHA, ROCTXRANGEPOP, ROCTXMARKA
+    
     IMPLICIT NONE
-
+    INTEGER :: RET
     REAL(KIND=JPRBT),INTENT(OUT), POINTER :: PREEL_REAL(:)
     INTEGER(KIND=JPIM),INTENT(IN) :: KF_FS,KF_GP,KF_UV_G,KF_SCALARS_G
     INTEGER(KIND=JPIM) ,OPTIONAL, INTENT(IN) :: KPTRGP(:)
@@ -586,6 +587,7 @@ CONTAINS
     !$ACC UPDATE HOST(ZCOMBUFS) IF(ISEND_COUNTS > 0)
 #endif
     !  Receive loop.........................................................
+    RET = roctxRangePushA("TRGTOL: RECEIVE LOOP"//C_NULL_CHAR)
     DO INR=1,IRECV_COUNTS
       IR=IR+1
       IPROC=IRECV_TO_PROC(INR)
@@ -610,6 +612,9 @@ CONTAINS
       CALL ABORT_TRANS("Should not be here: MPI is disabled")
 #endif
     ENDDO
+
+    call roctxRangePop()
+    call roctxMarkA("TRGTOL: RECEIVE LOOP"//C_NULL_CHAR)
 
     ! Copy local contribution
     IF(ISENDTOT(MYPROC) > 0 )THEN
