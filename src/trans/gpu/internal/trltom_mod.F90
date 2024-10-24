@@ -137,7 +137,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-    !!$ACC DATA PRESENT(PFBUF,PFBUF_IN)
+    !$ACC DATA PRESENT(PFBUF,PFBUF_IN)
 #endif
 
     IF(NPROC > 1) THEN
@@ -186,7 +186,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-      !!$ACC HOST_DATA USE_DEVICE(PFBUF_IN, PFBUF)
+      !$ACC HOST_DATA USE_DEVICE(PFBUF_IN, PFBUF)
 #endif
 #else
       !! this is safe-but-slow fallback for running without GPU-aware MPI
@@ -203,7 +203,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-      !!$ACC END HOST_DATA
+      !$ACC END HOST_DATA
 #endif
 #else
     !! this is safe-but-slow fallback for running without GPU-aware MPI
@@ -227,7 +227,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-      !$ACC PARALLEL LOOP FIRSTPRIVATE(ISTA,ILEN)
+      !$ACC PARALLEL LOOP DEFAULT(NONE) FIRSTPRIVATE(ISTA,ILEN)
 #endif
       DO J=ISTA,ISTA+ILEN-1
         PFBUF(J) = PFBUF_IN(J)
@@ -238,7 +238,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-    !!$ACC END DATA
+    !$ACC END DATA
 #endif
 
     IF (LHOOK) CALL DR_HOOK('TRLTOM',1,ZHOOK_HANDLE)

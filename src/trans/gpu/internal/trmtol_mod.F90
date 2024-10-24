@@ -161,7 +161,7 @@ CONTAINS
 #ifdef ACCGPU
 #ifdef __HIP_PLATFORM_AMD__
           ! Workaround for AMD GPUs - ASYNC execution of this kernel gives numerical errors
-          !$ACC KERNELS COPYIN(FROM_RECV,TO_RECV,FROM_SEND,TO_SEND)
+          !$ACC KERNELS DEFAULT(NONE) PRESENT(PFBUF,PFBUF_IN) COPYIN(FROM_RECV,TO_RECV,FROM_SEND,TO_SEND)
 #else
           !$ACC KERNELS ASYNC(1) DEFAULT(NONE) PRESENT(PFBUF,PFBUF_IN) COPYIN(FROM_RECV,TO_RECV,FROM_SEND,TO_SEND)
 #endif
@@ -186,7 +186,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-      !!$ACC HOST_DATA USE_DEVICE(PFBUF_IN, PFBUF)
+      !$ACC HOST_DATA USE_DEVICE(PFBUF_IN, PFBUF)
 #endif
 #else
     !! this is safe-but-slow fallback for running without GPU-aware MPI
@@ -205,7 +205,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-      !!$ACC END HOST_DATA
+      !$ACC END HOST_DATA
 #endif
 #else
     !! this is safe-but-slow fallback for running without GPU-aware MPI
@@ -232,7 +232,7 @@ CONTAINS
 #ifdef OMPGPU
 #endif
 #ifdef ACCGPU
-      !$ACC PARALLEL LOOP FIRSTPRIVATE(ISTA,ILEN)
+      !$ACC PARALLEL LOOP DEFAULT(NONE) PRESENT(PFBUF,PFBUF_IN) FIRSTPRIVATE(ISTA,ILEN)
 #endif
       DO J=ISTA,ISTA+ILEN-1
         PFBUF(J) = PFBUF_IN(J)
