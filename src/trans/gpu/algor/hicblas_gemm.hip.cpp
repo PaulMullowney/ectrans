@@ -196,7 +196,7 @@ public:
                   const Real *A, int lda, const Real *B, int ldb, Real beta,
                   Real *C, int ldc) const {
     hipblasHandle_t handle = get_hipblas_handle();
-#ifdef ACCGPU
+#if defined(ACCGPU) || defined(OMPGPU)
     HICBLAS_CHECK(hipblasSetStream(handle, stream));
 #endif
 
