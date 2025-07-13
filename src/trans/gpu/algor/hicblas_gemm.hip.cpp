@@ -124,28 +124,21 @@ void run_group_graph(Gemm &&gemm, int resol_id, int m, const int *n,
   auto graph = graphCache.find(key);
   if (graph == graphCache.end()) {
     // this graph does not exist yet
-    hipStream_t stream;
-    HIC_CHECK(hipStreamCreate(&stream));
-
-    hipGraph_t new_graph;
-    hipGraphCreate(&new_graph, 0);
+    hipStream_t captureStream;
+    HIC_CHECK(hipStreamCreate(&captureStream));
+    HIC_CHECK(hipStreamBeginCapture(captureStream, hipStreamCaptureModeGlobal));
     for (int i = 0; i < batchCount; ++i) {
       if (m == 0 || n[i] == 0 || k[i] == 0)
         continue;
 
-      HIC_CHECK(hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal));
-      gemm(stream, m, n[i], k[i], alpha, A + offsetsA[i], lda, B + offsetsB[i],
+      gemm(captureStream, m, n[i], k[i], alpha, A + offsetsA[i], lda, B + offsetsB[i],
            ldb[i], beta, C + offsetsC[i], ldc);
-      hipGraph_t my_graph;
-      HIC_CHECK(hipStreamEndCapture(stream, &my_graph));
-      hipGraphNode_t my_node;
-      HIC_CHECK(
-          hipGraphAddChildGraphNode(&my_node, new_graph, nullptr, 0, my_graph));
     }
+    hipGraph_t my_graph;
+    HIC_CHECK(hipStreamEndCapture(captureStream, &my_graph));
     hipGraphExec_t instance;
-    HIC_CHECK(hipGraphInstantiate(&instance, new_graph, NULL, NULL, 0));
-    HIC_CHECK(hipStreamDestroy(stream));
-    HIC_CHECK(hipGraphDestroy(new_graph));
+    HIC_CHECK(hipGraphInstantiate(&instance, my_graph, NULL, NULL, 0));
+    HIC_CHECK(hipStreamDestroy(captureStream));
 
     graphCache.insert({key, std::shared_ptr<hipGraphExec_t>(
                                 new hipGraphExec_t{instance}, [](auto ptr) {
@@ -156,6 +149,12 @@ void run_group_graph(Gemm &&gemm, int resol_id, int m, const int *n,
   }
 
   HIC_CHECK(hipGraphLaunch(*graphCache.at(key), stream));
+#ifdef CUDAGPU
+  HIC_CHECK(cudaStreamSynchronize(stream));
+#endif
+#ifdef HIPGPU
+  HIC_CHECK(hipStreamSynchronize(stream));
+#endif
 }
 
 // stupid simple gemm calls
@@ -171,6 +170,12 @@ void run_group(Gemm &&gemm, int resol_id, int m, const int *n, const int *k,
     gemm(stream, m, n[i], k[i], alpha, A + offsetsA[i], lda, B + offsetsB[i],
          ldb[i], beta, C + offsetsC[i], ldc);
   }
+#ifdef CUDAGPU
+  HIC_CHECK(cudaStreamSynchronize(stream));
+#endif
+#ifdef HIPGPU
+  HIC_CHECK(hipStreamSynchronize(stream));
+#endif
 }
 
 #ifdef USE_CUTLASS
