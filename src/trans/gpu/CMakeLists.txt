@@ -15,6 +15,7 @@ list( APPEND trans_gpu_common_src
   algor/device_mod.F90
   algor/growing_allocator_mod.F90
   algor/hicblas_mod.F90
+  algor/roctx_profiling.F90
   internal/tpm_stats.F90
   internal/tpm_hicfft.F90
 )
