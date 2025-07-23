@@ -673,6 +673,7 @@ CONTAINS
       & CALL MPL_ABORT("Overflow in trgtol")
 
     !  Receive loop.........................................................
+    CALL ROCTXRANGEPUSH("TRGTOL MPI")
     DO INR=1,IRECV_COUNTS
       IR=IR+1
       IPROC=IRECV_TO_PROC(INR)
@@ -792,6 +793,7 @@ CONTAINS
       CALL GSTATS(431,1)
     ENDIF
     CALL GSTATS(411,1)
+    CALL ROCTXRANGEPOP()
 
     !  Unpack loop.........................................................
 

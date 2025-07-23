@@ -172,7 +172,7 @@ ecbuild_add_option( FEATURE ECTRANS4PY
                     DESCRIPTION "Compile ectrans4py interface routines for python binding w/ ctypesForFortran" )
 
 
-ectrans_find_lapack()
+#ectrans_find_lapack()
 
 ### Add sources
 include( ectrans_compile_options )
