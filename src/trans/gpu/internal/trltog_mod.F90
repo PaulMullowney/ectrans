@@ -716,6 +716,7 @@ CONTAINS
     IF (ANY(IRECVTOT_MPI /= IRECVTOT)) &
       & CALL MPL_ABORT("Overflow in trltog")
 
+    CALL ROCTXRANGEPUSH("TRLTOG MPI")
     DO INR=1,IRECV_COUNTS
       IR=IR+1
       IRECV=IRECV_TO_PROC(INR)
@@ -732,7 +733,6 @@ CONTAINS
     ENDDO
 
     !...Send loop.........................................................
-    CALL ROCTXRANGEPUSH("TRLTOG MPI")
     DO INS=1,ISEND_COUNTS
       IR=IR+1
       ISEND=ISEND_TO_PROC(INS)
