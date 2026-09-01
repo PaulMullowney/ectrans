@@ -346,7 +346,9 @@ CONTAINS
     end block
 
 #ifdef OMPGPU
-    !$OMP TARGET DATA MAP(TO:IRECV_BUFR_TO_OUT) MAP(PRESENT,ALLOC:PREEL_REAL) IF (KF_FS > 0)
+    ! PREEL_REAL is a growing-allocator buffer (descriptor not in present table); supplied
+    ! to compute constructs via HAS_DEVICE_ADDR. Keep only the IRECV_BUFR_TO_OUT mapping here.
+    !$OMP TARGET DATA MAP(TO:IRECV_BUFR_TO_OUT) IF (KF_FS > 0)
     !$OMP TARGET DATA MAP(TO:PGP_INDICES)
 #endif
 #ifdef ACCGPU
@@ -440,11 +442,11 @@ CONTAINS
 #endif
     ENDIF
 #ifdef OMPGPU
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:PGP) IF(PRESENT(PGP) .AND. KF_GP > 0)
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:PGPUV) IF(PRESENT(PGPUV))
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:PGP2) IF(PRESENT(PGP2))
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:PGP3A) IF(PRESENT(PGP3A))
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:PGP3B) IF(PRESENT(PGP3B))
+    ! PGP/PGPUV/PGP2/PGP3A/PGP3B are user gridpoint arrays placed on the device via
+    ! EXT_ACC_CREATE (target enter data over the raw byte range), which maps the storage
+    ! without ever entering their descriptors in the present table, so MAP(PRESENT) on them
+    ! cannot succeed. Those referenced by the pack compute constructs (PGPUV/PGP2/PGP3A/
+    ! PGP3B) are supplied to them via HAS_DEVICE_ADDR instead.
 #endif
 #ifdef ACCGPU
     !$ACC DATA IF(PRESENT(PGP) .AND. KF_GP > 0)   PRESENT(PGP) ASYNC(1)
@@ -499,7 +501,7 @@ CONTAINS
 
     !....Pack loop.........................................................
 #ifdef OMPGPU
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:ZCOMBUFS) IF(ISEND_COUNTS > 0)
+    ! ZCOMBUFS is a growing-allocator buffer; supplied via HAS_DEVICE_ADDR in the pack loops
 #endif
 #ifdef ACCGPU
     !$ACC DATA IF(ISEND_COUNTS > 0) PRESENT(ZCOMBUFS) ASYNC(1)
@@ -583,10 +585,18 @@ CONTAINS
         ENDDO
       ELSE
 #ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,&
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(JK,JBLK,IFLD,&
         !$OMP& JI,IOFF,PBOUND) SHARED(ISEND_FIELD_COUNT_V,ISEND_WSET_SIZE_V,NPROMA,&
-        !$OMP& ISEND_WSET_OFFSET_V,INS,IFLDA,ICOMBUFS_OFFSET_V,PGP_INDICES,PGPUV,ZCOMBUFS,PGP2,&
-        !$OMP& PGP3A,PGP3B) MAP(TO:ISEND_FIELD_COUNT_V,ISEND_WSET_SIZE_V,NPROMA,&
+        !$OMP& ISEND_WSET_OFFSET_V,INS,IFLDA,ICOMBUFS_OFFSET_V,PGP_INDICES) &
+#ifndef __amdflang__
+        ! HAS_DEVICE_ADDR is itself a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9),
+        ! so it should satisfy DEFAULT(NONE) unaided, and the spec forbids also naming these
+        ! in SHARED. amdflang 23.3.0 and 24.1.0-pre reject the combination, so DEFAULT(NONE)
+        ! is dropped there only.
+        !$OMP& DEFAULT(NONE) &
+#endif
+        !$OMP& HAS_DEVICE_ADDR(PGPUV,ZCOMBUFS,PGP2,PGP3A,PGP3B) &
+        !$OMP& MAP(TO:ISEND_FIELD_COUNT_V,ISEND_WSET_SIZE_V,NPROMA,&
         !$OMP& ISEND_WSET_OFFSET_V,ICOMBUFS_OFFSET_V)
 #endif
 #ifdef ACCGPU
@@ -639,7 +649,7 @@ CONTAINS
           & 1_JPIB, ICOMBUFR_OFFSET(IRECV_COUNTS+1)*C_SIZEOF(ZCOMBUFR(1)))
     ENDIF
 #ifdef OMPGPU
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:ZCOMBUFR) IF(IRECV_COUNTS > 0)
+    ! ZCOMBUFR is a growing-allocator buffer; supplied via HAS_DEVICE_ADDR in the unpack loop
 #endif
 #ifdef ACCGPU
     !$ACC DATA IF(IRECV_COUNTS > 0) PRESENT(ZCOMBUFR) ASYNC(1)
@@ -736,9 +746,17 @@ CONTAINS
         ENDDO
       ELSE
 #ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,&
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(JK,JBLK,IFLD,&
         !$OMP& IPOS,IOFF,PBOUND) SHARED(KF_FS,ISEND_WSET_SIZE_V,NPROMA,ISEND_WSET_OFFSET_V,IFLDA,&
-        !$OMP& IRECV_BUFR_TO_OUT_V,IRECV_BUFR_TO_OUT,PGP_INDICES,PGPUV,PREEL_REAL,PGP2,PGP3A,PGP3B) &
+        !$OMP& IRECV_BUFR_TO_OUT_V,IRECV_BUFR_TO_OUT,PGP_INDICES) &
+#ifndef __amdflang__
+        ! HAS_DEVICE_ADDR is itself a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9),
+        ! so it should satisfy DEFAULT(NONE) unaided, and the spec forbids also naming these
+        ! in SHARED. amdflang 23.3.0 and 24.1.0-pre reject the combination, so DEFAULT(NONE)
+        ! is dropped there only.
+        !$OMP& DEFAULT(NONE) &
+#endif
+        !$OMP& HAS_DEVICE_ADDR(PGPUV,PREEL_REAL,PGP2,PGP3A,PGP3B) &
         !$OMP& MAP(TO:KF_FS)
 #endif
 #ifdef ACCGPU
@@ -833,16 +851,9 @@ CONTAINS
     CALL GSTATS(1603,1)
 
 #ifdef OMPGPU
-    !$OMP END TARGET DATA ! ZCOMBUFR
     !$OMP END TARGET DATA ! IFLDA
+    !$OMP END TARGET DATA ! PGP_INDICES
     !$OMP END TARGET DATA ! IRECV_BUFR_TO_OUT
-    !$OMP END TARGET DATA ! PGPINDICES
-    !$OMP END TARGET DATA !ZCOMBUFS (present)
-    !$OMP END TARGET DATA !PGP3B
-    !$OMP END TARGET DATA !PGP3A
-    !$OMP END TARGET DATA !PGP2
-    !$OMP END TARGET DATA !PGPUV
-    !$OMP END TARGET DATA !PGP
 #endif
 #ifdef ACCGPU
     !$ACC END DATA ! ZCOMBUFR

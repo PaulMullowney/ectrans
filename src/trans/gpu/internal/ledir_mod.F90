@@ -173,10 +173,14 @@ CONTAINS
                        IOUT0_STRIDES0,IOUT0_STRIDES1,IIN0_STRIDES0,IIN0_STRIDES1)
 
 #ifdef OMPGPU
+    ! ZINPS/ZINPA/ZINPS0/ZINPA0/ZOUT/ZOUT0/POA1 are growing-allocator buffers. Their storage
+    ! is registered with omp_target_associate_ptr, so ordinary mapping resolves it, but their
+    ! descriptors are never entered in the present table and so cannot be MAP(PRESENT)'d. The
+    ! GEMM calls below take their device addresses via USE_DEVICE_ADDR. ZAA/ZAS are ordinary
+    ! host arrays and remain present-checked by name.
     !$OMP TARGET DATA &
-    !$OMP& MAP(PRESENT,ALLOC:ZINPS,ZINPA,ZOUT,ZINPS0,ZINPA0,ZOUT0) &
     !$OMP& MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP,R,R_NTMAX,R_NSMAX) &
-    !$OMP& MAP(PRESENT,ALLOC:ZAA,ZAS,POA1,D_OFFSETS_GEMM1,D_OFFSETS_GEMM2)
+    !$OMP& MAP(PRESENT,ALLOC:ZAA,ZAS,D_OFFSETS_GEMM1,D_OFFSETS_GEMM2)
 #endif
 #ifdef ACCGPU
     !$ACC DATA &

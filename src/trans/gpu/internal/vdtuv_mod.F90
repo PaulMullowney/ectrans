@@ -94,10 +94,13 @@ ASSOCIATE(D_NUMP=>D%NUMP, D_MYMS=>D%MYMS, R_NTMAX=>R%NTMAX, F_RLAPIN=>F%RLAPIN)
 !$ACC&      PRESENT(PU, PV)
 #endif
 #ifdef OMPGPU
+! PVOR/PDIV/PU/PV are growing-allocator-backed pointers. Their storage is registered with
+! omp_target_associate_ptr, so ordinary mapping resolves it inside the nested compute
+! constructs, but their dummy descriptors are never entered in the present table and so
+! cannot be MAP(PRESENT)'d.
 !$OMP TARGET DATA                                                   &
 !$OMP&      MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_MYMS,D_NUMP,F,F_RLAPIN) &
-!$OMP&      MAP(PRESENT,ALLOC:PEPSNM, PVOR, PDIV)                   &
-!$OMP&      MAP(PRESENT,ALLOC:PU, PV)
+!$OMP&      MAP(PRESENT,ALLOC:PEPSNM)
 #endif
 
 !     ------------------------------------------------------------------

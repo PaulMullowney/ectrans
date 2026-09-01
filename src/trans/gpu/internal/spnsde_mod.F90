@@ -83,9 +83,12 @@ INTEGER(KIND=JPIM) :: J, JN, JI, IR, II
 ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS)
 
 #ifdef OMPGPU
+! PF/PNSD are growing-allocator-backed pointers. Their storage is registered with
+! omp_target_associate_ptr, so ordinary mapping resolves it, but their dummy descriptors
+! are never entered in the present table and so cannot be MAP(PRESENT)'d.
 !$OMP TARGET DATA &
 !$OMP&              MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_MYMS) &
-!$OMP&              MAP(PRESENT,ALLOC:D_NUMP,PEPSNM,PF,PNSD)
+!$OMP&              MAP(PRESENT,ALLOC:D_NUMP,PEPSNM)
 #endif
 #ifdef ACCGPU
 !$ACC DATA                                  &

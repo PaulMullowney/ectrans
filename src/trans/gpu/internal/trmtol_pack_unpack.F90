@@ -127,8 +127,12 @@ CONTAINS
                        IOUT0_STRIDES0=IOUT0_STRIDES0,IOUT0_SIZE=IOUT0_SIZE)
 
 #ifdef OMPGPU
+    ! ZOUTS/ZOUTA/ZOUTS0/ZOUTA0/FOUBUF_IN are growing-allocator buffers. Their storage is
+    ! registered with omp_target_associate_ptr, so ordinary mapping resolves it in the
+    ! compute construct below, but their descriptors are never entered in the present
+    ! table and so cannot be MAP(PRESENT)'d.
     !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_MYMS,D_NPNTGTB1,D_NUMP,G,G_NDGLU,R,R_NDGNH,R_NDGL) &
-    !$OMP&            MAP(PRESENT,ALLOC:ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,FOUBUF_IN,D_OFFSETS_GEMM1)
+    !$OMP&            MAP(PRESENT,ALLOC:D_OFFSETS_GEMM1)
 #endif
 #ifdef ACCGPU
     !$ACC DATA PRESENT(D,D_MYMS,D_NPNTGTB1,D_NUMP,G,G_NDGLU,R,R_NDGNH,R_NDGL) &
@@ -269,7 +273,11 @@ CALL ASSIGN_PTR(PREEL_COMPLEX, GET_ALLOCATION(ALLOCATOR, HTRMTOL_UNPACK%HREEL),&
     & 1_JPIB, 1_JPIB*KF_TOTAL*D%NLENGTF*C_SIZEOF(PREEL_COMPLEX(1)))
 
 #ifdef OMPGPU
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,FOUBUF,PREEL_COMPLEX,D_NSTAGTF,D_NDGL_FS)
+! FOUBUF/PREEL_COMPLEX are growing-allocator buffers. Their storage is registered with
+! omp_target_associate_ptr, so ordinary mapping resolves it in the compute construct
+! below, but their descriptors are never entered in the present table and so cannot be
+! MAP(PRESENT)'d.
+!$OMP TARGET DATA MAP(PRESENT,ALLOC:G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,D_NSTAGTF,D_NDGL_FS)
 #endif
 #ifdef ACCGPU
 !$ACC DATA PRESENT(G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,FOUBUF,PREEL_COMPLEX,D_NSTAGTF,D_NDGL_FS) ASYNC(1)

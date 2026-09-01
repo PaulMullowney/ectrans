@@ -92,8 +92,12 @@ ELSE
 ENDIF
 
 #ifdef OMPGPU
+! PREEL_COMPLEX is a growing-allocator buffer. Its storage is registered with
+! omp_target_associate_ptr, so ordinary mapping resolves it inside the nested compute
+! constructs, but its descriptor is never entered in the present table and so cannot
+! be MAP(PRESENT)'d here.
 !$OMP TARGET DATA &
-!$OMP& MAP(PRESENT,ALLOC:D,D_NPTRLS,D_NSTAGTF,PREEL_COMPLEX,F,F_RACTHE,G,G_NMEN,G_NLOEN,R,R_NSMAX)
+!$OMP& MAP(PRESENT,ALLOC:D,D_NPTRLS,D_NSTAGTF,F,F_RACTHE,G,G_NMEN,G_NLOEN,R,R_NSMAX)
 #endif
 #ifdef ACCGPU
 !$ACC DATA &

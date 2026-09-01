@@ -138,7 +138,10 @@ CONTAINS
         & 1_JPIB, 2_JPIB*D%NLENGT1B*KF_FS*C_SIZEOF(PFBUF(1)))
 
 #ifdef OMPGPU
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:PFBUF,PFBUF_IN)
+    ! PFBUF/PFBUF_IN are growing-allocator buffers whose descriptors are never entered in
+    ! the present table, so they cannot be MAP(PRESENT)'d. Nothing here needs them mapped:
+    ! this routine has no target compute construct, and the buffers are consumed by host
+    ! code and by GPU-aware MPI, which take their device addresses directly.
 #endif
 #ifdef ACCGPU
     !$ACC DATA PRESENT(PFBUF,PFBUF_IN)
@@ -257,7 +260,7 @@ CONTAINS
     ENDIF
 
 #ifdef OMPGPU
-    !$OMP END TARGET DATA
+    ! (PFBUF/PFBUF_IN present region removed above, so there is nothing to close here)
 #endif
 #ifdef ACCGPU
     !$ACC END DATA

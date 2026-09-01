@@ -84,7 +84,13 @@ MODULE PRFI1B_MOD
   !$ACC DATA PRESENT(D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0,PIA,PSPEC) ASYNC(1)
 #endif
 #ifdef OMPGPU
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0,PIA,PSPEC)
+  ! PIA and PSPEC are dropped from the present check, not from the data environment.
+  ! PIA's storage comes from the growing allocator (omp_target_alloc +
+  ! omp_target_associate_ptr) and PSPEC is a caller-supplied spectral array already
+  ! resident on the device. Neither descriptor is entered in the present table, so
+  ! MAP(PRESENT) cannot succeed, but both remain in SHARED on the compute construct
+  ! below and resolve through ordinary mapping.
+  !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0)
 #endif
 
   IF(PRESENT(KFLDPTR)) THEN

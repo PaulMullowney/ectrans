@@ -173,10 +173,13 @@ CONTAINS
 
 
 #ifdef OMPGPU
+    ! ZINP/ZOUT*/PIA are growing-allocator buffers. Their storage is registered with
+    ! omp_target_associate_ptr, so ordinary mapping resolves it, but their dummy
+    ! descriptors are never entered in the present table and so cannot be MAP(PRESENT)'d.
+    ! The GEMM calls below take their device addresses via USE_DEVICE_ADDR, as before.
     !$OMP TARGET DATA &
     !$OMP&              MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP) &
-    !$OMP&              MAP(PRESENT,ALLOC:ZINP,ZOUTS,ZOUTA,ZINP0,ZOUTS0,ZOUTA0) &
-    !$OMP&              MAP(PRESENT,ALLOC:ZAA,ZAS,PIA) &
+    !$OMP&              MAP(PRESENT,ALLOC:ZAA,ZAS) &
     !$OMP&              MAP(PRESENT,ALLOC:R,R_NSMAX,D_OFFSETS_GEMM2)
 #endif
 #ifdef ACCGPU

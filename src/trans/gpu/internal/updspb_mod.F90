@@ -97,7 +97,12 @@ MODULE UPDSPB_MOD
   !              -----------------------
 
 #ifdef OMPGPU
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:PSPEC,POA,R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0)
+  ! POA is a growing-allocator buffer, registered with omp_target_associate_ptr; PSPEC is an
+  ! output spectral array already mapped MAP(FROM) by the caller (LTDIR). Both are therefore
+  ! resident on the device and resolve through ordinary mapping from the SHARED list below,
+  ! but neither dummy descriptor is entered in the present table, so MAP(PRESENT) on them
+  ! cannot succeed.
+  !$OMP TARGET DATA MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0)
 #endif
 #ifdef ACCGPU
   !$ACC DATA PRESENT(PSPEC,POA,R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0) ASYNC(1)

@@ -97,7 +97,10 @@ CONTAINS
         & 1_JPIB, 2_JPIB*D%NLENGT0B*KF_FS*C_SIZEOF(FOUBUF_IN(1)))
 
 #ifdef OMPGPU
-   !$OMP TARGET DATA MAP(PRESENT,ALLOC:G,G_NMEN,D,D_NPNTGTB0,FOUBUF_IN,PREEL_COMPLEX,D_NSTAGTF,&
+   ! FOUBUF_IN/PREEL_COMPLEX are growing-allocator buffers. Their storage is registered
+   ! with omp_target_associate_ptr, so ordinary mapping resolves it, but their descriptors
+   ! are never in the present table and so cannot be MAP(PRESENT)'d.
+   !$OMP TARGET DATA MAP(PRESENT,ALLOC:G,G_NMEN,D,D_NPNTGTB0,D_NSTAGTF,&
    !$OMP& D_NDGL_FS,G_NLOEN,R,R_NSMAX)
 #endif
 #ifdef ACCGPU
@@ -244,10 +247,13 @@ CONTAINS
     IALLOC_POS=IALLOC_POS+IALLOC_SZ
 
 #ifdef OMPGPU
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:ZINPS,ZINPA,ZINPS0,ZINPA0) &
-    !$OMP& MAP(PRESENT,ALLOC:F,F_RW,F_RACTHE) &
+    ! ZINPS/ZINPA/ZINPS0/ZINPA0 (GEMM input buffers) and FOUBUF are growing-allocator
+    ! buffers. Their storage is registered with omp_target_associate_ptr, so ordinary
+    ! mapping resolves it and they stay in SHARED; only their descriptors are absent from
+    ! the present table, which is why they cannot be MAP(PRESENT)'d.
+    !$OMP TARGET DATA MAP(PRESENT,ALLOC:F,F_RW,F_RACTHE) &
     !$OMP& MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP,R,R_NDGNH,R_NDGL,G,G_NDGLU) &
-    !$OMP& MAP(PRESENT,ALLOC:D_NPNTGTB1,D_OFFSETS_GEMM1,FOUBUF)
+    !$OMP& MAP(PRESENT,ALLOC:D_NPNTGTB1,D_OFFSETS_GEMM1)
 
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
     !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,PAIA,PAIS) &

@@ -99,10 +99,10 @@ INTEGER(KIND=JPIM) :: IST ,IEND,IDIM1,IDIM3,J3
 !$ACC DATA PRESENT(PSPSC3B) IF(NF_SC3B > 0)
 #endif
 #ifdef OMPGPU
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:PSPSCALAR) IF(KF_SCALARS > 0 .AND. PRESENT(PSPSCALAR))
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:PSPSC2)  IF(NF_SC2 > 0)
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:PSPSC3A) IF(NF_SC3A > 0)
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:PSPSC3B) IF(NF_SC3B > 0)
+! PSPSCALAR/PSPSC2/PSPSC3A/PSPSC3B are output spectral arrays already mapped MAP(FROM) by the
+! caller (LTDIR), but their dummy descriptors here are not in the present table, so they cannot
+! be MAP(PRESENT)'d. Nothing here needs them mapped: this routine has no target compute
+! construct and only passes them on to UPDSPB.
 #endif
 
 IST = 1
@@ -143,10 +143,7 @@ IF (KF_SCALARS > 0) THEN
 ENDIF
 
 #ifdef OMPGPU
-!$OMP END TARGET DATA
-!$OMP END TARGET DATA
-!$OMP END TARGET DATA
-!$OMP END TARGET DATA
+! (PSPSC* present regions removed above, so there is nothing to close here)
 #endif
 #ifdef ACCGPU
 !$ACC END DATA
