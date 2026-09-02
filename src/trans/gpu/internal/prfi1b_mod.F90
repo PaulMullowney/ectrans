@@ -90,7 +90,7 @@ MODULE PRFI1B_MOD
   ! resident on the device. Neither descriptor is entered in the present table, so
   ! MAP(PRESENT) cannot succeed, but both remain in SHARED on the compute construct
   ! below and resolve through ordinary mapping.
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0)
+  !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0)
 #endif
 
   IF(PRESENT(KFLDPTR)) THEN
@@ -102,7 +102,7 @@ MODULE PRFI1B_MOD
     !loop over wavenumber
 
 #ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) &
     !$OMP& PRIVATE(KM,IASM0,INM) SHARED(KFIELDS,KDIM,D,R,PIA,PSPEC) MAP(TO:KFIELDS)
 #endif
 #ifdef ACCGPU

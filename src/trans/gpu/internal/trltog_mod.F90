@@ -628,7 +628,7 @@ CONTAINS
       IIN_TO_SEND_BUFR_V = IIN_TO_SEND_BUFR_OFFSET(MYPROC)
       IF (PRESENT(PGP)) THEN
 #ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) &
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(ECTRANS_OMP_DEFAULT) &
         !$OMP& PRIVATE(JK,JBLK,IFLD,IPOS) &
         !$OMP& SHARED(KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IFLDA,IIN_TO_SEND_BUFR_V, &
         !$OMP&        IIN_TO_SEND_BUFR,PREEL_REAL,PGP) &
@@ -660,9 +660,18 @@ CONTAINS
         ! so it should satisfy DEFAULT(NONE) unaided, and the spec forbids also naming these
         ! in SHARED. amdflang 23.3.0 and 24.1.0-pre reject the combination, so DEFAULT(NONE)
         ! is dropped there only.
-        !$OMP& DEFAULT(NONE) &
+        !$OMP& DEFAULT(ECTRANS_OMP_DEFAULT) &
 #endif
+#ifdef __NVCOMPILER
+        ! nvfortran has no HAS_DEVICE_ADDR (OpenMP 5.1). The storage of these arrays is already
+        ! on the device, so naming them SHARED and letting the target construct's implicit map
+        ! resolve against the present table reaches the same device memory; this is what upstream
+        ! did before the clause was introduced. Preferred over MAP(ALLOC:) because a presence miss
+        ! then copies rather than reading unmapped device memory.
+        !$OMP& SHARED(PREEL_REAL,PGPUV,PGP2,PGP3A,PGP3B) &
+#else
         !$OMP& HAS_DEVICE_ADDR(PREEL_REAL,PGPUV,PGP2,PGP3A,PGP3B) &
+#endif
         !$OMP& MAP(TO:KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IIN_TO_SEND_BUFR_V)
 #endif
 #ifdef ACCGPU
@@ -726,7 +735,7 @@ CONTAINS
       IIN_TO_SEND_BUFR_V = IIN_TO_SEND_BUFR_OFFSET(IPROC)
       ICOMBUFS_OFFSET_V = ICOMBUFS_OFFSET(INS)
 #ifdef OMPGPU
-      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) &
+      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(ECTRANS_OMP_DEFAULT) &
       !$OMP& PRIVATE(IPOS) &
       !$OMP& SHARED(KF_FS,ILEN,IIN_TO_SEND_BUFR_V,IIN_TO_SEND_BUFR,PREEL_REAL,ICOMBUFS_OFFSET_V, &
       !$OMP&        ZCOMBUFS) &
@@ -880,7 +889,7 @@ CONTAINS
       IRECV_WSET_SIZE_V = IRECV_WSET_SIZE(ISETW)
       IF (PRESENT(PGP)) THEN
 #ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) &
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(ECTRANS_OMP_DEFAULT) &
         !$OMP& PRIVATE(JK,JBLK,IFLD,JI) &
         !$OMP& SHARED(IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IFLDA, &
         !$OMP&        ICOMBUFR_OFFSET_V,ZCOMBUFR,PGP,INR) &
@@ -912,9 +921,18 @@ CONTAINS
         ! so it should satisfy DEFAULT(NONE) unaided, and the spec forbids also naming these
         ! in SHARED. amdflang 23.3.0 and 24.1.0-pre reject the combination, so DEFAULT(NONE)
         ! is dropped there only.
-        !$OMP& DEFAULT(NONE) &
+        !$OMP& DEFAULT(ECTRANS_OMP_DEFAULT) &
 #endif
+#ifdef __NVCOMPILER
+        ! nvfortran has no HAS_DEVICE_ADDR (OpenMP 5.1). The storage of these arrays is already
+        ! on the device, so naming them SHARED and letting the target construct's implicit map
+        ! resolve against the present table reaches the same device memory; this is what upstream
+        ! did before the clause was introduced. Preferred over MAP(ALLOC:) because a presence miss
+        ! then copies rather than reading unmapped device memory.
+        !$OMP& SHARED(ZCOMBUFR,PGPUV,PGP2,PGP3A,PGP3B) &
+#else
         !$OMP& HAS_DEVICE_ADDR(ZCOMBUFR,PGPUV,PGP2,PGP3A,PGP3B) &
+#endif
         !$OMP& MAP(TO:IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V, &
         !$OMP&     ICOMBUFR_OFFSET_V)
 #endif

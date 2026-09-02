@@ -178,9 +178,9 @@ CONTAINS
     ! descriptors are never entered in the present table and so cannot be MAP(PRESENT)'d.
     ! The GEMM calls below take their device addresses via USE_DEVICE_ADDR, as before.
     !$OMP TARGET DATA &
-    !$OMP&              MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP) &
-    !$OMP&              MAP(PRESENT,ALLOC:ZAA,ZAS) &
-    !$OMP&              MAP(PRESENT,ALLOC:R,R_NSMAX,D_OFFSETS_GEMM2)
+    !$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:D,D_MYMS,D_NUMP) &
+    !$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:ZAA,ZAS) &
+    !$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:R,R_NSMAX,D_OFFSETS_GEMM2)
 #endif
 #ifdef ACCGPU
     !$ACC DATA PRESENT(D,D_MYMS,D_NUMP) &

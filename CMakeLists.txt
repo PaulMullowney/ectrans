@@ -125,6 +125,32 @@ if( HAVE_GPU )
   endif()
 endif()
 
+# The OpenMP offload path asserts that growing-allocator-backed buffers are
+# already on the device with MAP(PRESENT,ALLOC:...). nvfortran does not implement
+# the OpenMP 5.1 'present' map-type modifier (verified absent in 26.3 and 26.5)
+# and rejects the clause at parse time. The modifier only adds a runtime check
+# that the data is present, so dropping it leaves the mapping semantics unchanged
+# and costs only the diagnostic.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC" )
+  set( ECTRANS_MAP_PRESENT_ALLOC "ALLOC" )
+else()
+  set( ECTRANS_MAP_PRESENT_ALLOC "PRESENT,ALLOC" )
+endif()
+
+# Most OpenMP compute constructs in the GPU backend use DEFAULT(NONE) and name
+# ASSOCIATE variables (R_NTMAX=>R%NTMAX and similar) in their loop bounds and
+# bodies. nvfortran cannot resolve those against its DEFAULT(NONE) check and
+# rejects them with "The selector r must be specified in either shared, private
+# or fprivate clauses", regardless of what the SHARED clause lists - naming the
+# base objects, the associate names, or both makes no difference. DEFAULT(SHARED)
+# is accepted, and is what the OpenMP implicit rules would give anyway, so the
+# only thing lost is the strictness check. Keep DEFAULT(NONE) everywhere else.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC" )
+  set( ECTRANS_OMP_DEFAULT "SHARED" )
+else()
+  set( ECTRANS_OMP_DEFAULT "NONE" )
+endif()
+
 ecbuild_add_option( FEATURE CUTLASS
                     DEFAULT OFF
                     CONDITION HAVE_GPU AND HAVE_CUDA AND CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC"

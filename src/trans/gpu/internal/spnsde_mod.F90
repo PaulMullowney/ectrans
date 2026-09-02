@@ -87,8 +87,8 @@ ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS)
 ! omp_target_associate_ptr, so ordinary mapping resolves it, but their dummy descriptors
 ! are never entered in the present table and so cannot be MAP(PRESENT)'d.
 !$OMP TARGET DATA &
-!$OMP&              MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_MYMS) &
-!$OMP&              MAP(PRESENT,ALLOC:D_NUMP,PEPSNM)
+!$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:R,R_NTMAX,D,D_MYMS) &
+!$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:D_NUMP,PEPSNM)
 #endif
 #ifdef ACCGPU
 !$ACC DATA                                  &
@@ -105,7 +105,7 @@ ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS)
 !*       1.1      COMPUTE
 
 #ifdef OMPGPU
-!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
+!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) &
 !$OMP& PRIVATE(KM,IR,II,JI) MAP(TO:KF_SCALARS) SHARED(D,R,PEPSNM,PF,PNSD,KF_SCALARS)
 #endif
 #ifdef ACCGPU

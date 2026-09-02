@@ -131,8 +131,8 @@ CONTAINS
     ! registered with omp_target_associate_ptr, so ordinary mapping resolves it in the
     ! compute construct below, but their descriptors are never entered in the present
     ! table and so cannot be MAP(PRESENT)'d.
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_MYMS,D_NPNTGTB1,D_NUMP,G,G_NDGLU,R,R_NDGNH,R_NDGL) &
-    !$OMP&            MAP(PRESENT,ALLOC:D_OFFSETS_GEMM1)
+    !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:D,D_MYMS,D_NPNTGTB1,D_NUMP,G,G_NDGLU,R,R_NDGNH,R_NDGL) &
+    !$OMP&            MAP(ECTRANS_MAP_PRESENT_ALLOC:D_OFFSETS_GEMM1)
 #endif
 #ifdef ACCGPU
     !$ACC DATA PRESENT(D,D_MYMS,D_NPNTGTB1,D_NUMP,G,G_NDGLU,R,R_NDGNH,R_NDGL) &
@@ -277,7 +277,7 @@ CALL ASSIGN_PTR(PREEL_COMPLEX, GET_ALLOCATION(ALLOCATOR, HTRMTOL_UNPACK%HREEL),&
 ! omp_target_associate_ptr, so ordinary mapping resolves it in the compute construct
 ! below, but their descriptors are never entered in the present table and so cannot be
 ! MAP(PRESENT)'d.
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,D_NSTAGTF,D_NDGL_FS)
+!$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,D_NSTAGTF,D_NDGL_FS)
 #endif
 #ifdef ACCGPU
 !$ACC DATA PRESENT(G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,FOUBUF,PREEL_COMPLEX,D_NSTAGTF,D_NDGL_FS) ASYNC(1)

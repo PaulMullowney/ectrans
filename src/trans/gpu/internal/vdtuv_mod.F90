@@ -99,8 +99,8 @@ ASSOCIATE(D_NUMP=>D%NUMP, D_MYMS=>D%MYMS, R_NTMAX=>R%NTMAX, F_RLAPIN=>F%RLAPIN)
 ! constructs, but their dummy descriptors are never entered in the present table and so
 ! cannot be MAP(PRESENT)'d.
 !$OMP TARGET DATA                                                   &
-!$OMP&      MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_MYMS,D_NUMP,F,F_RLAPIN) &
-!$OMP&      MAP(PRESENT,ALLOC:PEPSNM)
+!$OMP&      MAP(ECTRANS_MAP_PRESENT_ALLOC:R,R_NTMAX,D,D_MYMS,D_NUMP,F,F_RLAPIN) &
+!$OMP&      MAP(ECTRANS_MAP_PRESENT_ALLOC:PEPSNM)
 #endif
 
 !     ------------------------------------------------------------------
@@ -109,7 +109,7 @@ ASSOCIATE(D_NUMP=>D%NUMP, D_MYMS=>D%MYMS, R_NTMAX=>R%NTMAX, F_RLAPIN=>F%RLAPIN)
 !              ------------------------------------------
 
 #ifdef OMPGPU
-!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
+!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) &
 !$OMP& PRIVATE(IR,II,KM,ZKM,JI) SHARED(D,R,F,PEPSNM,PVOR,PDIV,PU,PV,KFIELD) &
 !$OMP& MAP(TO:KFIELD)
 #endif
