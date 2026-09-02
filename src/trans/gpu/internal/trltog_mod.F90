@@ -628,11 +628,17 @@ CONTAINS
       IIN_TO_SEND_BUFR_V = IIN_TO_SEND_BUFR_OFFSET(MYPROC)
       IF (PRESENT(PGP)) THEN
 #ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) &
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
+#ifndef __amdflang__
+        ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+        ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the
+        ! combination, so DEFAULT(NONE) is dropped there only.
+        !$OMP& DEFAULT(NONE) &
+#endif
         !$OMP& PRIVATE(JK,JBLK,IFLD,IPOS) &
-        !$OMP& SHARED(KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IFLDA,IIN_TO_SEND_BUFR_V, &
-        !$OMP&        IIN_TO_SEND_BUFR,PREEL_REAL,PGP) &
-        !$OMP& MAP(TO:KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IIN_TO_SEND_BUFR_V)
+        !$OMP& SHARED(IFLDA,IIN_TO_SEND_BUFR,PGP) HAS_DEVICE_ADDR(PREEL_REAL) &
+        !$OMP& FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,&
+        !$OMP&              IIN_TO_SEND_BUFR_V)
 #endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,IPOS) &
@@ -653,8 +659,9 @@ CONTAINS
 #ifdef OMPGPU
         !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
         !$OMP& PRIVATE(JK,JBLK,IFLD,IPOS) &
-        !$OMP& SHARED(KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IFLDA,IIN_TO_SEND_BUFR_V, &
-        !$OMP&        IIN_TO_SEND_BUFR,IGP_OFFSETS) &
+        !$OMP& SHARED(IFLDA,IIN_TO_SEND_BUFR,IGP_OFFSETS) &
+        !$OMP& FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,&
+        !$OMP&              IIN_TO_SEND_BUFR_V) &
 #ifndef __amdflang__
         ! HAS_DEVICE_ADDR is itself a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9),
         ! so it should satisfy DEFAULT(NONE) unaided, and the spec forbids also naming these
@@ -662,8 +669,7 @@ CONTAINS
         ! is dropped there only.
         !$OMP& DEFAULT(NONE) &
 #endif
-        !$OMP& HAS_DEVICE_ADDR(PREEL_REAL,PGPUV,PGP2,PGP3A,PGP3B) &
-        !$OMP& MAP(TO:KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IIN_TO_SEND_BUFR_V)
+        !$OMP& HAS_DEVICE_ADDR(PREEL_REAL,PGPUV,PGP2,PGP3A,PGP3B)
 #endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,IPOS) &
@@ -726,11 +732,16 @@ CONTAINS
       IIN_TO_SEND_BUFR_V = IIN_TO_SEND_BUFR_OFFSET(IPROC)
       ICOMBUFS_OFFSET_V = ICOMBUFS_OFFSET(INS)
 #ifdef OMPGPU
-      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) &
+      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
+#ifndef __amdflang__
+      ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+      ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the
+      ! combination, so DEFAULT(NONE) is dropped there only.
+      !$OMP& DEFAULT(NONE) &
+#endif
       !$OMP& PRIVATE(IPOS) &
-      !$OMP& SHARED(KF_FS,ILEN,IIN_TO_SEND_BUFR_V,IIN_TO_SEND_BUFR,PREEL_REAL,ICOMBUFS_OFFSET_V, &
-      !$OMP&        ZCOMBUFS) &
-      !$OMP& MAP(TO:KF_FS,ILEN,IIN_TO_SEND_BUFR_V,ICOMBUFS_OFFSET_V)
+      !$OMP& SHARED(IIN_TO_SEND_BUFR) HAS_DEVICE_ADDR(PREEL_REAL,ZCOMBUFS) &
+      !$OMP& FIRSTPRIVATE(KF_FS,ILEN,IIN_TO_SEND_BUFR_V,ICOMBUFS_OFFSET_V)
 #endif
 #ifdef ACCGPU
       !$ACC PARALLEL LOOP DEFAULT(NONE) PRIVATE(IPOS) FIRSTPRIVATE(KF_FS,ILEN,IIN_TO_SEND_BUFR_V, &
@@ -766,9 +777,9 @@ CONTAINS
     IR=0
     !...Receive loop.........................................................
 #ifdef USE_GPU_AWARE_MPI
-#ifdef OMPGPU
-    !$OMP TARGET DATA USE_DEVICE_PTR(ZCOMBUFS,ZCOMBUFR)
-#endif
+    ! Under OMPGPU these buffers come from the growing allocator, which hands out device
+    ! pointers directly (see GROWING_ALLOCATOR_MOD), so they can go straight to GPU-aware
+    ! MPI; a USE_DEVICE_PTR region would only map and re-copy their descriptors.
 #ifdef ACCGPU
     !$ACC HOST_DATA USE_DEVICE(ZCOMBUFS,ZCOMBUFR)
 #endif
@@ -836,9 +847,6 @@ CONTAINS
 #ifdef ACCGPU
     !$ACC END HOST_DATA ! ZCOMBUFS, ZCOMBUFR
 #endif
-#ifdef OMPGPU
-    !$OMP END TARGET DATA ! ZCOMBUFS, ZCOMBUFR
-#endif
 #else
 #ifdef OMPGPU
 #endif
@@ -880,12 +888,17 @@ CONTAINS
       IRECV_WSET_SIZE_V = IRECV_WSET_SIZE(ISETW)
       IF (PRESENT(PGP)) THEN
 #ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) &
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
+#ifndef __amdflang__
+        ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+        ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the
+        ! combination, so DEFAULT(NONE) is dropped there only.
+        !$OMP& DEFAULT(NONE) &
+#endif
         !$OMP& PRIVATE(JK,JBLK,IFLD,JI) &
-        !$OMP& SHARED(IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IFLDA, &
-        !$OMP&        ICOMBUFR_OFFSET_V,ZCOMBUFR,PGP,INR) &
-        !$OMP& MAP(TO:IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V, &
-        !$OMP&     ICOMBUFR_OFFSET_V)
+        !$OMP& SHARED(IFLDA,PGP) HAS_DEVICE_ADDR(ZCOMBUFR) &
+        !$OMP& FIRSTPRIVATE(IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V, &
+        !$OMP&             ICOMBUFR_OFFSET_V,INR)
 #endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,JI) &
@@ -905,8 +918,9 @@ CONTAINS
 #ifdef OMPGPU
         !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
         !$OMP& PRIVATE(JK,JBLK,IFLD,JI) &
-        !$OMP& SHARED(IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,IFLDA, &
-        !$OMP&        ICOMBUFR_OFFSET_V,IGP_OFFSETS,INR) &
+        !$OMP& SHARED(IFLDA,IGP_OFFSETS) &
+        !$OMP& FIRSTPRIVATE(IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V, &
+        !$OMP&             ICOMBUFR_OFFSET_V,INR) &
 #ifndef __amdflang__
         ! HAS_DEVICE_ADDR is itself a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9),
         ! so it should satisfy DEFAULT(NONE) unaided, and the spec forbids also naming these
@@ -914,9 +928,7 @@ CONTAINS
         ! is dropped there only.
         !$OMP& DEFAULT(NONE) &
 #endif
-        !$OMP& HAS_DEVICE_ADDR(ZCOMBUFR,PGPUV,PGP2,PGP3A,PGP3B) &
-        !$OMP& MAP(TO:IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V, &
-        !$OMP&     ICOMBUFR_OFFSET_V)
+        !$OMP& HAS_DEVICE_ADDR(ZCOMBUFR,PGPUV,PGP2,PGP3A,PGP3B)
 #endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,JI) &

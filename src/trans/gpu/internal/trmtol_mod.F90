@@ -160,7 +160,15 @@ CONTAINS
           FROM_RECV = IOFFR(IRANK) + 1
           TO_RECV = FROM_RECV + ILENR(IRANK) - 1
 #ifdef OMPGPU
-          !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO DEFAULT(NONE) SHARED(PFBUF,PFBUF_IN,FROM_RECV,TO_RECV,FROM_SEND,TO_SEND)
+          !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO &
+#ifndef __amdflang__
+          ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+          ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the
+          ! combination, so DEFAULT(NONE) is dropped there only.
+          !$OMP& DEFAULT(NONE) &
+#endif
+          !$OMP& HAS_DEVICE_ADDR(PFBUF,PFBUF_IN) &
+          !$OMP& FIRSTPRIVATE(FROM_RECV,TO_RECV,FROM_SEND,TO_SEND)
           DO JPOS=FROM_SEND,TO_SEND
              PFBUF(JPOS-FROM_SEND+FROM_RECV) = PFBUF_IN(JPOS)
           ENDDO
@@ -187,9 +195,9 @@ CONTAINS
       ENDIF
       CALL GSTATS(421,0)
 #ifdef USE_GPU_AWARE_MPI
-#ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(PFBUF_IN,PFBUF)
-#endif
+      ! Under OMPGPU these buffers come from the growing allocator, which hands out device
+      ! pointers directly (see GROWING_ALLOCATOR_MOD), so they can go straight to GPU-aware
+      ! MPI; a USE_DEVICE_ADDR region would only map and re-copy their descriptors.
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(PFBUF_IN, PFBUF)
 #endif
@@ -216,9 +224,6 @@ CONTAINS
 #ifdef USE_GPU_AWARE_MPI
 #ifdef ACCGPU
       !$ACC END HOST_DATA
-#endif
-#ifdef OMPGPU
-      !$OMP END TARGET DATA
 #endif
 #else
       !! this is safe-but-slow fallback for running without GPU-aware MPI
@@ -249,8 +254,14 @@ CONTAINS
       IEND = ISTA+ILEN-1
       CALL GSTATS(1608,0)
 #ifdef OMPGPU
-      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO DEFAULT(NONE) &
-      !$OMP SHARED(PFBUF,PFBUF_IN,ISTA,IEND) MAP(TO:ISTA,IEND)
+      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO &
+#ifndef __amdflang__
+      ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+      ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the
+      ! combination, so DEFAULT(NONE) is dropped there only.
+      !$OMP& DEFAULT(NONE) &
+#endif
+      !$OMP HAS_DEVICE_ADDR(PFBUF,PFBUF_IN) FIRSTPRIVATE(ISTA,IEND)
 #endif
 #ifdef ACCGPU
       !$ACC PARALLEL LOOP DEFAULT(NONE) PRESENT(PFBUF,PFBUF_IN) FIRSTPRIVATE(ISTA,IEND)

@@ -100,8 +100,11 @@ CONTAINS
    ! FOUBUF_IN/PREEL_COMPLEX are growing-allocator buffers. Their storage is registered
    ! with omp_target_associate_ptr, so ordinary mapping resolves it, but their descriptors
    ! are never in the present table and so cannot be MAP(PRESENT)'d.
-   !$OMP TARGET DATA MAP(PRESENT,ALLOC:G,G_NMEN,D,D_NPNTGTB0,D_NSTAGTF,&
-   !$OMP& D_NDGL_FS,G_NLOEN,R,R_NSMAX)
+   ! G, D and R are reached only through their ASSOCIATE aliases. Naming the parent types here
+   ! makes the runtime walk every allocatable component of those derived types and re-copy each
+   ! component descriptor on entry, so only the aliases are mapped.
+   !$OMP TARGET DATA MAP(PRESENT,ALLOC:G_NMEN,D_NPNTGTB0,D_NSTAGTF,&
+   !$OMP& D_NDGL_FS,G_NLOEN,R_NSMAX)
 #endif
 #ifdef ACCGPU
     !$ACC DATA PRESENT(G,G_NMEN,D,D_NPNTGTB0,FOUBUF_IN,PREEL_COMPLEX,D_NSTAGTF,D_NDGL_FS,G_NLOEN, R,R_NSMAX) ASYNC(1)
@@ -115,8 +118,7 @@ CONTAINS
 
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) PRIVATE(IGLG,IOFF_LAT,ISTA,SCAL) &
-    !$OMP& SHARED(D,R,KF_FS,OFFSET_VAR,G,&
-    !$OMP& PREEL_COMPLEX,FOUBUF_IN) MAP(TO:KF_FS,OFFSET_VAR)
+    !$OMP& HAS_DEVICE_ADDR(PREEL_COMPLEX,FOUBUF_IN) FIRSTPRIVATE(KF_FS,OFFSET_VAR)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP PRIVATE(IGLG,IOFF_LAT,ISTA,SCAL) FIRSTPRIVATE(KF_FS,OFFSET_VAR) &
@@ -251,15 +253,23 @@ CONTAINS
     ! buffers. Their storage is registered with omp_target_associate_ptr, so ordinary
     ! mapping resolves it and they stay in SHARED; only their descriptors are absent from
     ! the present table, which is why they cannot be MAP(PRESENT)'d.
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:F,F_RW,F_RACTHE) &
-    !$OMP& MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP,R,R_NDGNH,R_NDGL,G,G_NDGLU) &
+    ! F, D, R and G are reached only through their ASSOCIATE aliases. Naming the parent types
+    ! here makes the runtime walk every allocatable component of those derived types and re-copy
+    ! each component descriptor on entry, so only the aliases are mapped.
+    !$OMP TARGET DATA MAP(PRESENT,ALLOC:F_RW,F_RACTHE) &
+    !$OMP& MAP(PRESENT,ALLOC:D_MYMS,D_NUMP,R_NDGNH,R_NDGL,G_NDGLU) &
     !$OMP& MAP(PRESENT,ALLOC:D_NPNTGTB1,D_OFFSETS_GEMM1)
 
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
+#ifndef __amdflang__
+    ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+    ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the combination,
+    ! so DEFAULT(NONE) is dropped there only.
+    !$OMP& DEFAULT(NONE) &
+#endif
     !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,PAIA,PAIS) &
-    !$OMP& SHARED(D,R,KF_FS,G,FOUBUF,F,&
-    !$OMP& IIN_STRIDES0,ZINPA,ZINPS,IIN0_STRIDES0,ZINPA0,ZINPS0,KF_UV) &
-    !$OMP& MAP(TO:KF_FS,KF_UV,IIN_STRIDES0,IIN0_STRIDES0)
+    !$OMP& HAS_DEVICE_ADDR(FOUBUF,ZINPA,ZINPS,ZINPA0,ZINPS0) &
+    !$OMP& FIRSTPRIVATE(KF_FS,KF_UV,IIN_STRIDES0,IIN0_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC DATA &
@@ -308,8 +318,15 @@ CONTAINS
 
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
 #ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) PRIVATE(KM) &
-    !$OMP& SHARED(D_NUMP,KF_FS,D_MYMS,G_NDGLU,D_OFFSETS_GEMM1,IIN_STRIDES0,ZINPA,ZINPS) MAP(TO:KF_FS)
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM) &
+#ifndef __amdflang__
+    ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+    ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the combination,
+    ! so DEFAULT(NONE) is dropped there only.
+    !$OMP& DEFAULT(NONE) &
+#endif
+    !$OMP& HAS_DEVICE_ADDR(ZINPA,ZINPS) &
+    !$OMP& FIRSTPRIVATE(KF_FS,IIN_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(2) PRIVATE(KM,JGL) &

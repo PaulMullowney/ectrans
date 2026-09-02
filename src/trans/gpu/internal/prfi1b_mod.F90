@@ -90,7 +90,10 @@ MODULE PRFI1B_MOD
   ! resident on the device. Neither descriptor is entered in the present table, so
   ! MAP(PRESENT) cannot succeed, but both remain in SHARED on the compute construct
   ! below and resolve through ordinary mapping.
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0)
+  ! D and R are reached only through their ASSOCIATE aliases. Naming the parent types
+  ! here makes the runtime walk every allocatable component of TYPE_DISTR and TYPE_DIM
+  ! and re-copy each component descriptor on entry, so only the aliases are mapped.
+  !$OMP TARGET DATA MAP(PRESENT,ALLOC:D_NUMP,R_NSMAX,D_MYMS,D_NASM0)
 #endif
 
   IF(PRESENT(KFLDPTR)) THEN
@@ -103,7 +106,8 @@ MODULE PRFI1B_MOD
 
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
-    !$OMP& PRIVATE(KM,IASM0,INM) SHARED(KFIELDS,KDIM,D,R,PIA,PSPEC) MAP(TO:KFIELDS)
+    !$OMP& PRIVATE(KM,IASM0,INM) &
+    !$OMP& SHARED(PIA,PSPEC) FIRSTPRIVATE(KFIELDS)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IASM0,INM) &

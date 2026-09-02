@@ -178,8 +178,11 @@ CONTAINS
     ! descriptors are never entered in the present table and so cannot be MAP(PRESENT)'d. The
     ! GEMM calls below take their device addresses via USE_DEVICE_ADDR. ZAA/ZAS are ordinary
     ! host arrays and remain present-checked by name.
+    ! D and R are reached only through their ASSOCIATE aliases. Naming the parent types here
+    ! makes the runtime walk every allocatable component of TYPE_DISTR and TYPE_DIM and re-copy
+    ! each component descriptor on entry, so only the aliases are mapped.
     !$OMP TARGET DATA &
-    !$OMP& MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP,R,R_NTMAX,R_NSMAX) &
+    !$OMP& MAP(PRESENT,ALLOC:D_MYMS,D_NUMP,R_NTMAX,R_NSMAX) &
     !$OMP& MAP(PRESENT,ALLOC:ZAA,ZAS,D_OFFSETS_GEMM1,D_OFFSETS_GEMM2)
 #endif
 #ifdef ACCGPU
@@ -204,7 +207,7 @@ CONTAINS
     IF(IMLOC0(1) > 0) THEN
       ! compute m=0 in double precision:
 #ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA0,ZINPA0,ZOUT0)
+      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA0)
 #endif
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(ZAA0,ZINPA0,ZOUT0)
@@ -241,7 +244,7 @@ CONTAINS
       KS(IMLOC0(1)) = 0
     ENDIF
 #ifdef OMPGPU
-    !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA,ZINPA,ZOUT)
+    !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA)
 #endif
 #ifdef ACCGPU
     !$ACC HOST_DATA USE_DEVICE(ZAA,ZINPA,ZOUT)
@@ -273,9 +276,15 @@ CONTAINS
     CALL GSTATS(414,1)
 
 #ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) DEFAULT(NONE) PRIVATE(KM,IA) &
-    !$OMP& SHARED(D,R,KF_FS,IOUT_STRIDES0,ZOUT,IOUT0_STRIDES0,ZOUT0,POA1) &
-    !$OMP& MAP(TO:KF_FS,IOUT_STRIDES0)
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IA) &
+#ifndef __amdflang__
+    ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
+    ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the combination,
+    ! so DEFAULT(NONE) is dropped there only.
+    !$OMP& DEFAULT(NONE) &
+#endif
+    !$OMP& HAS_DEVICE_ADDR(ZOUT,ZOUT0,POA1) &
+    !$OMP& FIRSTPRIVATE(KF_FS,IOUT_STRIDES0,IOUT0_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) FIRSTPRIVATE(KF_FS,IOUT_STRIDES0,IOUT0_STRIDES0) DEFAULT(NONE) &
@@ -321,7 +330,7 @@ CONTAINS
 
     IF(IMLOC0(1) > 0) THEN
 #ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS0,ZINPS0,ZOUT0)
+      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS0)
 #endif
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(ZAS0,ZINPS0,ZOUT0)
@@ -360,7 +369,7 @@ CONTAINS
       KS(IMLOC0(1)) = 0
     ENDIF
 #ifdef OMPGPU
-    !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS,ZINPS,ZOUT)
+    !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS)
 #endif
 #ifdef ACCGPU
     !$ACC HOST_DATA USE_DEVICE(ZAS,ZINPS,ZOUT)
@@ -393,7 +402,8 @@ CONTAINS
 
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IS) &
-    !$OMP& SHARED(D,R,KF_FS,IOUT_STRIDES0,ZOUT,POA1)
+    !$OMP& HAS_DEVICE_ADDR(ZOUT,ZOUT0,POA1) &
+    !$OMP& FIRSTPRIVATE(KF_FS,IOUT_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS) FIRSTPRIVATE(KF_FS,IOUT_STRIDES0,IOUT0_STRIDES0) &

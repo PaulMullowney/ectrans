@@ -131,7 +131,10 @@ CONTAINS
     ! registered with omp_target_associate_ptr, so ordinary mapping resolves it in the
     ! compute construct below, but their descriptors are never entered in the present
     ! table and so cannot be MAP(PRESENT)'d.
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_MYMS,D_NPNTGTB1,D_NUMP,G,G_NDGLU,R,R_NDGNH,R_NDGL) &
+    ! D, G and R are reached only through their ASSOCIATE aliases. Naming the parent types here
+    ! makes the runtime walk every allocatable component of those derived types and re-copy each
+    ! component descriptor on entry, so only the aliases are mapped.
+    !$OMP TARGET DATA MAP(PRESENT,ALLOC:D_MYMS,D_NPNTGTB1,D_NUMP,G_NDGLU,R_NDGNH,R_NDGL) &
     !$OMP&            MAP(PRESENT,ALLOC:D_OFFSETS_GEMM1)
 #endif
 #ifdef ACCGPU
@@ -143,9 +146,9 @@ CONTAINS
     ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
     ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-    !$OMP& SHARED(D,R,G,ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,FOUBUF_IN) &
+    !$OMP& HAS_DEVICE_ADDR(ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,FOUBUF_IN) &
     !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
-    !$OMP& MAP(TO:KF_LEG,IOUT_STRIDES0,IOUT0_STRIDES0)
+    !$OMP& FIRSTPRIVATE(KF_LEG,IOUT_STRIDES0,IOUT0_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
@@ -277,7 +280,10 @@ CALL ASSIGN_PTR(PREEL_COMPLEX, GET_ALLOCATION(ALLOCATOR, HTRMTOL_UNPACK%HREEL),&
 ! omp_target_associate_ptr, so ordinary mapping resolves it in the compute construct
 ! below, but their descriptors are never entered in the present table and so cannot be
 ! MAP(PRESENT)'d.
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,D_NSTAGTF,D_NDGL_FS)
+! G and D are reached only through their ASSOCIATE aliases. Naming the parent types here makes
+! the runtime walk every allocatable component of TYPE_GEOMETRY and TYPE_DISTR and re-copy each
+! component descriptor on entry, so only the aliases are mapped.
+!$OMP TARGET DATA MAP(PRESENT,ALLOC:G_NLOEN,G_NMEN,D_NPNTGTB0,D_NSTAGTF,D_NDGL_FS)
 #endif
 #ifdef ACCGPU
 !$ACC DATA PRESENT(G,G_NLOEN,G_NMEN,D,D_NPNTGTB0,FOUBUF,PREEL_COMPLEX,D_NSTAGTF,D_NDGL_FS) ASYNC(1)
@@ -289,9 +295,9 @@ ILOEN_MAX=MAXVAL(G_NLOEN)
 ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
 ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
 !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-!$OMP& SHARED(D,G,KF_CURRENT,ILOEN_MAX,OFFSET_VAR,FOUBUF,PREEL_COMPLEX) &
+!$OMP& HAS_DEVICE_ADDR(FOUBUF,PREEL_COMPLEX) &
 !$OMP& PRIVATE(IGLG,IOFF_LAT,ISTA,RET_REAL,RET_COMPLEX) &
-!$OMP& MAP(TO:KF_CURRENT,ILOEN_MAX,OFFSET_VAR,KF_TOTAL)
+!$OMP& FIRSTPRIVATE(KF_CURRENT,ILOEN_MAX,OFFSET_VAR,KF_TOTAL)
 #endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP PRIVATE(IGLG,IOFF_LAT,ISTA,RET_REAL,RET_COMPLEX) FIRSTPRIVATE(KF_CURRENT,&

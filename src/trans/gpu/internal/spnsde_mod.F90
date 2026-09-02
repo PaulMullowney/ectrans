@@ -86,8 +86,11 @@ ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS)
 ! PF/PNSD are growing-allocator-backed pointers. Their storage is registered with
 ! omp_target_associate_ptr, so ordinary mapping resolves it, but their dummy descriptors
 ! are never entered in the present table and so cannot be MAP(PRESENT)'d.
+! R and D are reached only through their ASSOCIATE aliases. Naming the parent types here makes
+! the runtime walk every allocatable component of TYPE_DIM and TYPE_DISTR and re-copy each
+! component descriptor on entry, so only the aliases are mapped.
 !$OMP TARGET DATA &
-!$OMP&              MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_MYMS) &
+!$OMP&              MAP(PRESENT,ALLOC:R_NTMAX,D_MYMS) &
 !$OMP&              MAP(PRESENT,ALLOC:D_NUMP,PEPSNM)
 #endif
 #ifdef ACCGPU
@@ -106,7 +109,8 @@ ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS)
 
 #ifdef OMPGPU
 !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
-!$OMP& PRIVATE(KM,IR,II,JI) MAP(TO:KF_SCALARS) SHARED(D,R,PEPSNM,PF,PNSD,KF_SCALARS)
+!$OMP& PRIVATE(KM,IR,II,JI) FIRSTPRIVATE(KF_SCALARS) &
+!$OMP& SHARED(PEPSNM,PF,PNSD)
 #endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IR,II,JI) FIRSTPRIVATE(KF_SCALARS) &

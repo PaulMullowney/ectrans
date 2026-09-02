@@ -102,7 +102,10 @@ MODULE UPDSPB_MOD
   ! resident on the device and resolve through ordinary mapping from the SHARED list below,
   ! but neither dummy descriptor is entered in the present table, so MAP(PRESENT) on them
   ! cannot succeed.
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0)
+  ! R and D are reached only through their ASSOCIATE aliases. Naming the parent types here
+  ! makes the runtime walk every allocatable component of TYPE_DIM and TYPE_DISTR and re-copy
+  ! each component descriptor on entry, so only the aliases are mapped.
+  !$OMP TARGET DATA MAP(PRESENT,ALLOC:R_NTMAX,D_NUMP,D_MYMS,D_NASM0)
 #endif
 #ifdef ACCGPU
   !$ACC DATA PRESENT(PSPEC,POA,R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0) ASYNC(1)
@@ -112,7 +115,7 @@ MODULE UPDSPB_MOD
 ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
 #ifdef OMPGPU
   !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,IASM0,INM) &
-  !$OMP& SHARED(D,R,KFIELD,POA,PSPEC) MAP(TO:KFIELD)
+  !$OMP& SHARED(POA,PSPEC) FIRSTPRIVATE(KFIELD)
 #endif
 #ifdef ACCGPU
   !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM) DEFAULT(NONE) COPYIN(KFIELD) &

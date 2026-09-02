@@ -98,8 +98,11 @@ ASSOCIATE(D_NUMP=>D%NUMP, D_MYMS=>D%MYMS, R_NTMAX=>R%NTMAX, F_RLAPIN=>F%RLAPIN)
 ! omp_target_associate_ptr, so ordinary mapping resolves it inside the nested compute
 ! constructs, but their dummy descriptors are never entered in the present table and so
 ! cannot be MAP(PRESENT)'d.
+! R, D and F are reached only through their ASSOCIATE aliases. Naming the parent types here
+! makes the runtime walk every allocatable component of those derived types and re-copy each
+! component descriptor on entry, so only the aliases are mapped.
 !$OMP TARGET DATA                                                   &
-!$OMP&      MAP(PRESENT,ALLOC:R,R_NTMAX,D,D_MYMS,D_NUMP,F,F_RLAPIN) &
+!$OMP&      MAP(PRESENT,ALLOC:R_NTMAX,D_MYMS,D_NUMP,F_RLAPIN) &
 !$OMP&      MAP(PRESENT,ALLOC:PEPSNM)
 #endif
 
@@ -110,8 +113,9 @@ ASSOCIATE(D_NUMP=>D%NUMP, D_MYMS=>D%MYMS, R_NTMAX=>R%NTMAX, F_RLAPIN=>F%RLAPIN)
 
 #ifdef OMPGPU
 !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
-!$OMP& PRIVATE(IR,II,KM,ZKM,JI) SHARED(D,R,F,PEPSNM,PVOR,PDIV,PU,PV,KFIELD) &
-!$OMP& MAP(TO:KFIELD)
+!$OMP& PRIVATE(IR,II,KM,ZKM,JI) &
+!$OMP& SHARED(PEPSNM,PVOR,PDIV,PU,PV) &
+!$OMP& FIRSTPRIVATE(KFIELD)
 #endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(NONE) PRIVATE(IR,II,KM,ZKM,JI) FIRSTPRIVATE(KFIELD,KMLOC) &
