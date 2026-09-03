@@ -175,8 +175,8 @@ CONTAINS
     INTEGER(KIND=JPIM), PARAMETER :: IGP_OFFSETS_UV=1, IGP_OFFSETS_GP2=2, IGP_OFFSETS_GP3A=3, IGP_OFFSETS_GP3B=4
     INTEGER(KIND=JPIM) :: IUVPAR,IGP2PAR,IGP3ALEV,IGP3APAR,IGP3BLEV,IGP3BPAR,IOFF
 
-    INTEGER(KIND=JPIB) :: IIN_TO_SEND_BUFR(D%NLENGTF,2)
-    INTEGER(KIND=JPIM) :: IIN_TO_SEND_BUFR_OFFSET(NPROC), IIN_TO_SEND_BUFR_V
+    ! Offset of the current task's first point in the D%NGP_* index tables.
+    INTEGER(KIND=JPIM) :: IGP_V
     INTEGER(KIND=JPIM) :: IRECV_FIELD_COUNT(NPRTRV),IRECV_FIELD_COUNT_V
     INTEGER(KIND=JPIM) :: IRECV_WSET_SIZE(NPRTRW),IRECV_WSET_SIZE_V
     INTEGER(KIND=JPIM) :: IRECV_WSET_OFFSET(NPRTRW+1), IRECV_WSET_OFFSET_V
@@ -457,43 +457,12 @@ CONTAINS
       IRECVTOT(JROC) = 1_JPIB*IRECV_WSET_SIZE(ISETW)*IRECV_FIELD_COUNT(ISETV)
     ENDDO
 
-    ! Prepare sender arrays
-    IIN_TO_SEND_BUFR_OFFSET(1) = 0
+    ! Prepare sender arrays. The per-point offsets live in D%NGP_* (built once in
+    ! SUMP_TRANS); all that is needed here is each task's point count, which is the
+    ! span of its slots in D%NGP_OFFSET.
     DO JROC=1,NPROC
-      ! Get new offset to my current KINDEX entry
-      IF (JROC > 1 .AND. KF_FS > 0) THEN
-        IIN_TO_SEND_BUFR_OFFSET(JROC) = IIN_TO_SEND_BUFR_OFFSET(JROC-1)+ISENDTOT(JROC-1)/KF_FS
-      ELSEIF (JROC > 1) THEN
-        IIN_TO_SEND_BUFR_OFFSET(JROC) = IIN_TO_SEND_BUFR_OFFSET(JROC-1)
-      ENDIF
-
-      CALL PE2SET(JROC,ISETA,ISETB,ISETW,ISETV)
-
-      ! MAX(Index of first fourier latitude for this W set, first latitude of a senders A set)
-      ! i.e. we find the overlap between what we have on sender side (others A set) and the receiver
-      ! (me, the W-set). Ideally those conincide, at least mostly.
-      IFIRSTLAT = MAX(D%NPTRLS(MYSETW),D%NFRSTLAT(ISETA))
-      ! MIN(Index of last fourier latitude for this W set, last latitude of a senders A set)
-      ILASTLAT  = MIN(D%NPTRLS(MYSETW)+D%NULTPP(MYSETW)-1,D%NLSTLAT(ISETA))
-
-      IPOS = 0
-      DO JGL=IFIRSTLAT,ILASTLAT
-        ! get from "actual" latitude to the latitude strip offset
-        IGL  = JGL-D%NFRSTLAT(ISETA)+D%NPTRFRSTLAT(ISETA)
-        ! get from "actual" latitude to the latitude offset
-        IGLL = JGL-D%NPTRLS(MYSETW)+1
-        DO JL=1,D%NONL(IGL,ISETB)
-          IPOS = IPOS+1
-          ! offset to first layer of this gridpoint
-          IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_OFFSET(JROC)+IPOS,1) = &
-              & 1_JPIB*KF_FS*D%NSTAGTF(IGLL)+(D%NSTA(IGL,ISETB)-1)+(JL-1)
-          ! distance between two layers of this gridpoint
-          IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_OFFSET(JROC)+IPOS,2) = &
-              & D%NSTAGTF(IGLL+1)-D%NSTAGTF(IGLL)
-        ENDDO
-      ENDDO
       !we always receive the full fourier space
-      ISENDTOT(JROC) = IPOS*KF_FS
+      ISENDTOT(JROC) = 1_JPIB*(D%NGP_OFFSET(JROC+1)-D%NGP_OFFSET(JROC))*KF_FS
     ENDDO
     LLOCAL_CONTRIBUTION = ISENDTOT(MYPROC) > 0
 
@@ -540,7 +509,6 @@ CONTAINS
     ! without ever entering their descriptors in the present table, so MAP(PRESENT) on them
     ! cannot succeed. PREEL_REAL is a growing-allocator buffer. Those referenced by the
     ! pack/unpack compute constructs are supplied to them via HAS_DEVICE_ADDR instead.
-    !$OMP TARGET DATA MAP(TO:IIN_TO_SEND_BUFR) IF(KF_FS > 0)
 #endif
 #ifdef ACCGPU
     !$ACC DATA IF(PRESENT(PGP))   PRESENT(PGP) ASYNC(1)
@@ -550,7 +518,7 @@ CONTAINS
     !$ACC DATA IF(PRESENT(PGP3B)) PRESENT(PGP3B) ASYNC(1)
 
     ! Present until self contribution and packing are done
-    !$ACC DATA COPYIN(IIN_TO_SEND_BUFR) PRESENT(PREEL_REAL) IF(KF_FS > 0) ASYNC(1)
+    !$ACC DATA PRESENT(PREEL_REAL) IF(KF_FS > 0) ASYNC(1)
 #endif
 
     CALL GSTATS(1806,1)
@@ -622,10 +590,12 @@ CONTAINS
     IF(LLOCAL_CONTRIBUTION) THEN
 
       CALL GSTATS(1604,0)
+      CALL GSTATS(450,0)
 
       IRECV_WSET_OFFSET_V = IRECV_WSET_OFFSET(MYSETW)
       IRECV_WSET_SIZE_V = IRECV_WSET_SIZE(MYSETW)
-      IIN_TO_SEND_BUFR_V = IIN_TO_SEND_BUFR_OFFSET(MYPROC)
+      IGP_V = D%NGP_OFFSET(MYPROC)
+      ASSOCIATE(D_NGP_A=>D%NGP_A, D_NGP_B=>D%NGP_B, D_NGP_STRIDE=>D%NGP_STRIDE)
       IF (PRESENT(PGP)) THEN
 #ifdef OMPGPU
         !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
@@ -636,22 +606,25 @@ CONTAINS
         !$OMP& DEFAULT(NONE) &
 #endif
         !$OMP& PRIVATE(JK,JBLK,IFLD,IPOS) &
-        !$OMP& SHARED(IFLDA,IIN_TO_SEND_BUFR,PGP) HAS_DEVICE_ADDR(PREEL_REAL) &
+        !$OMP& SHARED(IFLDA,PGP,D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+        !$OMP& HAS_DEVICE_ADDR(PREEL_REAL) &
+        !$OMP& MAP(PRESENT,ALLOC:D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
         !$OMP& FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,&
-        !$OMP&              IIN_TO_SEND_BUFR_V)
+        !$OMP&              IGP_V)
 #endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,IPOS) &
+        !$ACC&         PRESENT(D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
         !$ACC&         FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,IRECV_WSET_OFFSET_V, &
-        !$ACC&         IIN_TO_SEND_BUFR_V,NPROMA) ASYNC(1)
+        !$ACC&         IGP_V,NPROMA) ASYNC(1)
 #endif
         DO JFLD=1,KF_FS
           DO JL=1,IRECV_WSET_SIZE_V
             JK = MOD(IRECV_WSET_OFFSET_V+JL-1,NPROMA)+1
             JBLK = (IRECV_WSET_OFFSET_V+JL-1)/NPROMA+1
             IFLD = IFLDA(JFLD,1)
-            IPOS = IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_V+JL,1)+ &
-                & (JFLD-1)*IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_V+JL,2)+1
+            IPOS = 1_JPIB*KF_FS*D_NGP_A(IGP_V+JL)+D_NGP_B(IGP_V+JL) &
+                & +(JFLD-1)*D_NGP_STRIDE(IGP_V+JL)+1
             PGP(JK,IFLD,JBLK) = PREEL_REAL(IPOS)
           ENDDO
         ENDDO
@@ -659,9 +632,10 @@ CONTAINS
 #ifdef OMPGPU
         !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
         !$OMP& PRIVATE(JK,JBLK,IFLD,IPOS) &
-        !$OMP& SHARED(IFLDA,IIN_TO_SEND_BUFR,IGP_OFFSETS) &
+        !$OMP& SHARED(IFLDA,IGP_OFFSETS,D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+        !$OMP& MAP(PRESENT,ALLOC:D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
         !$OMP& FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,NPROMA,IRECV_WSET_OFFSET_V,&
-        !$OMP&              IIN_TO_SEND_BUFR_V) &
+        !$OMP&              IGP_V) &
 #ifndef __amdflang__
         ! HAS_DEVICE_ADDR is itself a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9),
         ! so it should satisfy DEFAULT(NONE) unaided, and the spec forbids also naming these
@@ -673,16 +647,17 @@ CONTAINS
 #endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,IPOS) &
+        !$ACC&              PRESENT(D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
         !$ACC&              FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,IRECV_WSET_OFFSET_V, &
-        !$ACC&              IIN_TO_SEND_BUFR_V,NPROMA) ASYNC(1)
+        !$ACC&              IGP_V,NPROMA) ASYNC(1)
 #endif
         DO JFLD=1,KF_FS
           DO JL=1,IRECV_WSET_SIZE_V
             JK = MOD(IRECV_WSET_OFFSET_V+JL-1,NPROMA)+1
             JBLK = (IRECV_WSET_OFFSET_V+JL-1)/NPROMA+1
             IFLD = IFLDA(JFLD,1)
-            IPOS = IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_V+JL,1)+ &
-                & (JFLD-1)*IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_V+JL,2)+1
+            IPOS = 1_JPIB*KF_FS*D_NGP_A(IGP_V+JL)+D_NGP_B(IGP_V+JL) &
+                & +(JFLD-1)*D_NGP_STRIDE(IGP_V+JL)+1
             IF(IGP_OFFSETS(IFLD,1) == IGP_OFFSETS_UV) THEN
               PGPUV(JK,IGP_OFFSETS(IFLD,3),IGP_OFFSETS(IFLD,2),JBLK) = PREEL_REAL(IPOS)
             ELSEIF(IGP_OFFSETS(IFLD,1) == IGP_OFFSETS_GP2) THEN
@@ -695,6 +670,8 @@ CONTAINS
           ENDDO
         ENDDO
       ENDIF
+      END ASSOCIATE
+      CALL GSTATS(450,1)
       CALL GSTATS(1604,1)
     ENDIF
 
@@ -726,10 +703,12 @@ CONTAINS
     !$ACC DATA PRESENT(ZCOMBUFS) IF(ISEND_COUNTS > 0) ASYNC(1)
 #endif
     CALL GSTATS(1605,0)
+    CALL GSTATS(451,0)
+    ASSOCIATE(D_NGP_A=>D%NGP_A, D_NGP_B=>D%NGP_B, D_NGP_STRIDE=>D%NGP_STRIDE)
     DO INS=1,ISEND_COUNTS
       IPROC = ISEND_TO_PROC(INS)
       ILEN = ISENDTOT(IPROC)/KF_FS
-      IIN_TO_SEND_BUFR_V = IIN_TO_SEND_BUFR_OFFSET(IPROC)
+      IGP_V = D%NGP_OFFSET(IPROC)
       ICOMBUFS_OFFSET_V = ICOMBUFS_OFFSET(INS)
 #ifdef OMPGPU
       !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
@@ -740,21 +719,27 @@ CONTAINS
       !$OMP& DEFAULT(NONE) &
 #endif
       !$OMP& PRIVATE(IPOS) &
-      !$OMP& SHARED(IIN_TO_SEND_BUFR) HAS_DEVICE_ADDR(PREEL_REAL,ZCOMBUFS) &
-      !$OMP& FIRSTPRIVATE(KF_FS,ILEN,IIN_TO_SEND_BUFR_V,ICOMBUFS_OFFSET_V)
+      !$OMP& SHARED(D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+      !$OMP& HAS_DEVICE_ADDR(PREEL_REAL,ZCOMBUFS) &
+      !$OMP& MAP(PRESENT,ALLOC:D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+      !$OMP& FIRSTPRIVATE(KF_FS,ILEN,IGP_V,ICOMBUFS_OFFSET_V)
 #endif
 #ifdef ACCGPU
-      !$ACC PARALLEL LOOP DEFAULT(NONE) PRIVATE(IPOS) FIRSTPRIVATE(KF_FS,ILEN,IIN_TO_SEND_BUFR_V, &
+      !$ACC PARALLEL LOOP DEFAULT(NONE) PRIVATE(IPOS) &
+      !$ACC&              PRESENT(D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+      !$ACC&              FIRSTPRIVATE(KF_FS,ILEN,IGP_V, &
       !$ACC&              ICOMBUFS_OFFSET_V) COLLAPSE(2) ASYNC(1)
 #endif
       DO JFLD=1,KF_FS
         DO JL=1,ILEN
-          IPOS = IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_V+JL,1)+ &
-              & (JFLD-1)*IIN_TO_SEND_BUFR(IIN_TO_SEND_BUFR_V+JL,2)+1
+          IPOS = 1_JPIB*KF_FS*D_NGP_A(IGP_V+JL)+D_NGP_B(IGP_V+JL) &
+              & +(JFLD-1)*D_NGP_STRIDE(IGP_V+JL)+1
           ZCOMBUFS(ICOMBUFS_OFFSET_V+(JFLD-1)*ILEN+JL) = PREEL_REAL(IPOS)
         ENDDO
       ENDDO
     ENDDO
+    END ASSOCIATE
+    CALL GSTATS(451,1)
     CALL GSTATS(1605,1)
 #ifdef OMPGPU
     ! ZCOMBUFS region closed (now supplied via HAS_DEVICE_ADDR)
@@ -774,6 +759,7 @@ CONTAINS
     ENDIF
     CALL GSTATS(421,0)
 
+    CALL GSTATS(452,0)
     IR=0
     !...Receive loop.........................................................
 #ifdef USE_GPU_AWARE_MPI
@@ -838,10 +824,14 @@ CONTAINS
 #endif
     ENDDO
 
+    CALL GSTATS(452,1)
+
+    CALL GSTATS(453,0)
     IF(IR > 0) THEN
       CALL MPL_WAIT(KREQUEST=IREQ(1:IR), &
       & CDSTRING='TRLTOG: WAIT FOR SENDS AND RECEIVES')
     ENDIF
+    CALL GSTATS(453,1)
 
 #ifdef USE_GPU_AWARE_MPI
 #ifdef ACCGPU
@@ -877,6 +867,7 @@ CONTAINS
     !  Unpack loop.........................................................
 
     CALL GSTATS(1606,0)
+    CALL GSTATS(454,0)
     DO INR=1,IRECV_COUNTS
       IRECV=IRECV_TO_PROC(INR)
       CALL PE2SET(IRECV,ISETA,ISETB,ISETW,ISETV)
@@ -977,7 +968,6 @@ CONTAINS
     CALL GSTATS(422,0)
 #ifdef OMPGPU
     !$OMP END TARGET DATA ! IFLDA
-    !$OMP END TARGET DATA ! IIN_TO_SEND_BUFR
 #endif
 #ifdef ACCGPU
     !$ACC END DATA ! IFLDA
@@ -1055,6 +1045,7 @@ CONTAINS
     !$OMP END TARGET DATA !IGP_OFFSETS
 #endif
 
+    CALL GSTATS(454,1)
     CALL GSTATS(1606,1)
 
     ! Free this now

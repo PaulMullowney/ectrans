@@ -7,6 +7,8 @@ public :: allocator
 type allocator_t
 contains
     procedure, nopass :: set_pinning
+    procedure, nopass :: set_device_resident
+    procedure, nopass :: device_resident_supported
     procedure, nopass :: set_logging
     procedure, nopass :: set_logging_output_unit
 
@@ -83,6 +85,12 @@ type(allocator_t) :: allocator
 
 character(kind=c_char), pointer, private :: c_label(:) => null()
 
+! When set, allocate() returns device memory rather than host memory. This is what makes
+! LPGP_ON_GPU valid for the gridpoint arrays: TRGTOL and TRLTOG hand those arrays to their
+! pack/unpack kernels through HAS_DEVICE_ADDR, which asserts the array's base address is
+! already a device address. That assertion only holds for storage obtained this way.
+logical, private :: device_resident_ = .false.
+
 interface
     function c_allocate_var(bytes) result(ptr) bind(c, name="ectrans_memory_allocate_var")
         use iso_c_binding, only: c_ptr, c_size_t
@@ -147,6 +155,82 @@ contains
         endif
     end subroutine
 
+    subroutine set_device_resident(device_resident)
+        logical, intent(in) :: device_resident
+        if (device_resident .and. .not. device_resident_supported()) then
+            write(0,'(a)') 'ectrans_memory: device-resident allocation requires an OpenMP &
+                &offload build (OMPGPU)'
+            error stop 1
+        endif
+        device_resident_ = device_resident
+    end subroutine
+
+    function device_resident_supported() result(supported)
+        logical :: supported
+#ifdef OMPGPU
+        supported = .true.
+#else
+        supported = .false.
+#endif
+    end function
+
+    ! Single dispatch point for every allocate_var_* below. Host storage keeps going through
+    ! the C helper so the pinning and logging behaviour is unchanged; device storage uses the
+    ! same omp_target_alloc + omp_target_associate_ptr pattern as the library's internal
+    ! growing allocator, which is what the transform kernels already consume successfully.
+    function allocate_bytes(bytes) result(mem)
+#ifdef OMPGPU
+        use omp_lib, only : omp_get_default_device, omp_target_alloc, omp_target_associate_ptr
+#endif
+        use, intrinsic :: iso_c_binding, only : c_ptr, c_size_t, c_associated
+        integer(c_size_t), intent(in) :: bytes
+        type(c_ptr) :: mem
+#ifdef OMPGPU
+        integer :: device_num, ierr
+#endif
+
+        if (.not. device_resident_ .or. bytes == 0_c_size_t) then
+            mem = c_allocate_var(bytes)
+            return
+        endif
+
+#ifdef OMPGPU
+        device_num = omp_get_default_device()
+        mem = omp_target_alloc(bytes, device_num)
+        if (.not. c_associated(mem)) then
+            write(0,'(a,i0,a)') 'ectrans_memory: omp_target_alloc failed for ', bytes, ' bytes'
+            error stop 1
+        endif
+        ! Associate the device address with itself so the runtime can still resolve the
+        ! range if anything looks it up; the kernels reach it via HAS_DEVICE_ADDR.
+        ierr = omp_target_associate_ptr(mem, mem, bytes, 0_c_size_t, device_num)
+#else
+        mem = c_allocate_var(bytes)
+#endif
+    end function
+
+    subroutine deallocate_bytes(mem, bytes)
+#ifdef OMPGPU
+        use omp_lib, only : omp_get_default_device, omp_target_free
+#endif
+        use, intrinsic :: iso_c_binding, only : c_ptr, c_size_t, c_associated
+        type(c_ptr), intent(in) :: mem
+        integer(c_size_t), intent(in) :: bytes
+        logical :: on_device
+
+        on_device = .false.
+#ifdef OMPGPU
+        on_device = device_resident_ .and. bytes > 0_c_size_t
+#endif
+        if (on_device) then
+#ifdef OMPGPU
+            if (c_associated(mem)) call omp_target_free(mem, omp_get_default_device())
+#endif
+        else
+            call c_deallocate_var(mem, bytes)
+        endif
+    end subroutine
+
     subroutine set_logging(logging)
         logical, intent(in) :: logging
         if (logging) then
@@ -166,7 +250,7 @@ contains
         real(c_float), pointer, intent(inout) :: array(:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_float))
+        mem = allocate_bytes(required_bytes(shape,c_float))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -175,7 +259,7 @@ contains
         real(c_float), pointer, intent(inout) :: array(:,:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_float))
+        mem = allocate_bytes(required_bytes(shape,c_float))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -184,7 +268,7 @@ contains
         real(c_float), pointer, intent(inout) :: array(:,:,:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_float))
+        mem = allocate_bytes(required_bytes(shape,c_float))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -193,7 +277,7 @@ contains
         real(c_float), pointer, intent(inout) :: array(:,:,:,:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_float))
+        mem = allocate_bytes(required_bytes(shape,c_float))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -202,7 +286,7 @@ contains
         real(c_double), pointer, intent(inout) :: array(:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_double))
+        mem = allocate_bytes(required_bytes(shape,c_double))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -211,7 +295,7 @@ contains
         real(c_double), pointer, intent(inout) :: array(:,:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_double))
+        mem = allocate_bytes(required_bytes(shape,c_double))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -220,7 +304,7 @@ contains
         real(c_double), pointer, intent(inout) :: array(:,:,:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_double))
+        mem = allocate_bytes(required_bytes(shape,c_double))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -229,7 +313,7 @@ contains
         real(c_double), pointer, intent(inout) :: array(:,:,:,:)
         integer(c_int), intent(in) :: shape(:)
         type(c_ptr) :: mem
-        mem = c_allocate_var(required_bytes(shape,c_double))
+        mem = allocate_bytes(required_bytes(shape,c_double))
         call c_f_pointer(mem, array, shape)
     end subroutine
 
@@ -243,7 +327,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
@@ -257,7 +341,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1,1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
@@ -271,7 +355,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1,1,1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
@@ -285,7 +369,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1,1,1,1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
@@ -299,7 +383,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
@@ -313,7 +397,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1,1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
@@ -327,7 +411,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1,1,1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
@@ -341,7 +425,7 @@ contains
         if (bytes > 0) then
             mem = c_loc(array(1,1,1,1))
         endif
-        call c_deallocate_var(mem, bytes)
+        call deallocate_bytes(mem, bytes)
         array => null()
     end subroutine
 
