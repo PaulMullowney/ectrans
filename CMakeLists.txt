@@ -125,6 +125,104 @@ if( HAVE_GPU )
   endif()
 endif()
 
+# The OpenMP offload path asserts that growing-allocator-backed buffers are
+# already on the device with MAP(PRESENT,ALLOC:...). nvfortran does not implement
+# the OpenMP 5.1 'present' map-type modifier (verified absent in 26.3 and 26.5)
+# and rejects the clause at parse time. The modifier only adds a runtime check
+# that the data is present, so dropping it leaves the mapping semantics unchanged
+# and costs only the diagnostic.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC" )
+  set( ECTRANS_MAP_PRESENT_ALLOC "ALLOC" )
+else()
+  set( ECTRANS_MAP_PRESENT_ALLOC "PRESENT,ALLOC" )
+endif()
+
+# Most OpenMP compute constructs in the GPU backend use DEFAULT(NONE) and name
+# ASSOCIATE variables (R_NTMAX=>R%NTMAX and similar) in their loop bounds and
+# bodies. nvfortran cannot resolve those against its DEFAULT(NONE) check and
+# rejects them with "The selector r must be specified in either shared, private
+# or fprivate clauses", regardless of what the SHARED clause lists - naming the
+# base objects, the associate names, or both makes no difference. DEFAULT(SHARED)
+# is accepted, and is what the OpenMP implicit rules would give anyway, so the
+# only thing lost is the strictness check. Keep DEFAULT(NONE) everywhere else.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC" )
+  set( ECTRANS_OMP_DEFAULT "SHARED" )
+else()
+  set( ECTRANS_OMP_DEFAULT "NONE" )
+endif()
+
+# ECTRANS_OMP_DEFAULT_CLAUSE is the whole DEFAULT clause rather than just its argument, so that it
+# can expand to nothing. It belongs on the constructs that also name device-resident arrays through
+# ECTRANS_DEVICE_ADDR_CLAUSE, because those two clauses cannot be combined on amdflang 23.3.0 or
+# 24.1.0-pre: HAS_DEVICE_ADDR is itself a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and
+# so should satisfy DEFAULT(NONE) unaided, and the spec forbids naming those arrays in SHARED as
+# well, but amdflang rejects the pair regardless. Dropping the clause there leaves the construct to
+# the implicit rules, which is all DEFAULT(NONE) would have asserted anyway.
+#
+# The conflict is specific to compilers that implement HAS_DEVICE_ADDR, which nvfortran does not,
+# so the pair never arises there. It still cannot have DEFAULT(NONE), for the separate ASSOCIATE
+# reason above: the only way to satisfy its check is to name the parent derived types (D, R, F, G)
+# in SHARED - naming the ASSOCIATE selectors alone does not do it - and that would pull whole
+# derived types into the construct's data environment, which the per-component ASSOCIATE mapping
+# exists to avoid. So it keeps the argument from ECTRANS_OMP_DEFAULT, and only the clause's
+# presence is decided here.
+#
+# Because the macro can expand to nothing it has to share a line with other clauses, or the empty
+# expansion would leave a continuation line holding only its own marker. Constructs without
+# ECTRANS_DEVICE_ADDR_CLAUSE keep DEFAULT(ECTRANS_OMP_DEFAULT): the clause has to go on appearing
+# wherever amdflang accepts it.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "Flang" )
+  set( ECTRANS_OMP_DEFAULT_CLAUSE "" )
+else()
+  set( ECTRANS_OMP_DEFAULT_CLAUSE "DEFAULT(${ECTRANS_OMP_DEFAULT})" )
+endif()
+
+# ECTRANS_DEVICE_ADDR_CLAUSE is the clause the compute constructs use for the growing-allocator
+# buffers and gridpoint arrays whose storage is already on the device. HAS_DEVICE_ADDR is the
+# one that says so, and makes the construct take the address as-is rather than mapping it.
+# nvfortran does not implement that OpenMP 5.1 clause (rejected at parse time in 26.3), so
+# there those arrays are named in SHARED instead and left to the construct's implicit mapping.
+#
+# Unlike ECTRANS_LOOP_BOUNDS_CLAUSE below, the two expansions here are not equivalent: SHARED
+# is a fallback that gives the same answer by a more expensive route, not a free choice
+# between two spellings.
+#
+# This is correct but not free, and on this path it is expensive: where the storage is not
+# resolvable in the present table the runtime copies the whole array in and out on every
+# launch. Running with --gp-on-gpu makes the gridpoint arrays genuinely device-resident and
+# takes that traffic away: at T639 on 8 GPUs, three iterations move 1334MB in and 2752MB out
+# without it against 265MB and 255MB with it, worth ~22ms per step in single precision
+# (52.4ms against 30.6ms). Measured on 26.3 from the NVCOMPILER_ACC_NOTIFY=3 transfer log.
+#
+# IS_DEVICE_PTR, the OpenMP 4.5 predecessor, parses and carries the right meaning but is not
+# a usable substitute: nvfortran does not marshal the array descriptor with it, so any
+# assumed-shape list item (PIA in LEINV, the PGP* gridpoint arrays) indexes off uninitialised
+# bounds and faults with CUDA_ERROR_ILLEGAL_ADDRESS. Verified on 26.3.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC" )
+  set( ECTRANS_DEVICE_ADDR_CLAUSE "SHARED" )
+else()
+  set( ECTRANS_DEVICE_ADDR_CLAUSE "HAS_DEVICE_ADDR" )
+endif()
+
+# ECTRANS_LOOP_BOUNDS_CLAUSE is the data-sharing clause the compute constructs use for the
+# scalars that bound their loops, which they have to name for DEFAULT(NONE) to be satisfied.
+# It is a separate clause from the rest because which one is used decides the launch geometry on
+# nvfortran: with the bound in FIRSTPRIVATE it stops folding the trip count into the launch
+# and emits a grid-stride kernel of one block per SM, so a loop nest that should fill the
+# device runs on 148 blocks of 128 threads on a B200 no matter how large it is. Naming the
+# same scalar in SHARED restores a trip-count-sized grid. Verified on 26.3 with a 1.2M
+# iteration nest: 9375 blocks and 20us in SHARED against 148 blocks and 34us in FIRSTPRIVATE.
+#
+# Only the bounds move. A scalar in SHARED is still implicitly firstprivate on the target
+# construct, so it arrives with its host value and needs no MAP; this is what the loop bounds
+# in these constructs relied on before they were moved to FIRSTPRIVATE. It holds only because
+# the bounds are read-only - anything assigned in the loop body must stay FIRSTPRIVATE.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC" )
+  set( ECTRANS_LOOP_BOUNDS_CLAUSE "SHARED" )
+else()
+  set( ECTRANS_LOOP_BOUNDS_CLAUSE "FIRSTPRIVATE" )
+endif()
+
 ecbuild_add_option( FEATURE CUTLASS
                     DEFAULT OFF
                     CONDITION HAVE_GPU AND HAVE_CUDA AND CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC"

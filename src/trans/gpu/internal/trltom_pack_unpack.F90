@@ -103,7 +103,7 @@ CONTAINS
    ! G, D and R are reached only through their ASSOCIATE aliases. Naming the parent types here
    ! makes the runtime walk every allocatable component of those derived types and re-copy each
    ! component descriptor on entry, so only the aliases are mapped.
-   !$OMP TARGET DATA MAP(PRESENT,ALLOC:G_NMEN,D_NPNTGTB0,D_NSTAGTF,&
+   !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:G_NMEN,D_NPNTGTB0,D_NSTAGTF,&
    !$OMP& D_NDGL_FS,G_NLOEN,R_NSMAX)
 #endif
 #ifdef ACCGPU
@@ -118,7 +118,8 @@ CONTAINS
 
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) PRIVATE(IGLG,IOFF_LAT,ISTA,SCAL) &
-    !$OMP& HAS_DEVICE_ADDR(PREEL_COMPLEX,FOUBUF_IN) FIRSTPRIVATE(KF_FS,OFFSET_VAR)
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_COMPLEX,FOUBUF_IN) ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS) &
+    !$OMP& FIRSTPRIVATE(OFFSET_VAR)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP PRIVATE(IGLG,IOFF_LAT,ISTA,SCAL) FIRSTPRIVATE(KF_FS,OFFSET_VAR) &
@@ -256,20 +257,14 @@ CONTAINS
     ! F, D, R and G are reached only through their ASSOCIATE aliases. Naming the parent types
     ! here makes the runtime walk every allocatable component of those derived types and re-copy
     ! each component descriptor on entry, so only the aliases are mapped.
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC:F_RW,F_RACTHE) &
-    !$OMP& MAP(PRESENT,ALLOC:D_MYMS,D_NUMP,R_NDGNH,R_NDGL,G_NDGLU) &
-    !$OMP& MAP(PRESENT,ALLOC:D_NPNTGTB1,D_OFFSETS_GEMM1)
+    !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:F_RW,F_RACTHE) &
+    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:D_MYMS,D_NUMP,R_NDGNH,R_NDGL,G_NDGLU) &
+    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:D_NPNTGTB1,D_OFFSETS_GEMM1)
 
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-#ifndef __amdflang__
-    ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
-    ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the combination,
-    ! so DEFAULT(NONE) is dropped there only.
-    !$OMP& DEFAULT(NONE) &
-#endif
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) ECTRANS_OMP_DEFAULT_CLAUSE &
     !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,PAIA,PAIS) &
-    !$OMP& HAS_DEVICE_ADDR(FOUBUF,ZINPA,ZINPS,ZINPA0,ZINPS0) &
-    !$OMP& FIRSTPRIVATE(KF_FS,KF_UV,IIN_STRIDES0,IIN0_STRIDES0)
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(FOUBUF,ZINPA,ZINPS,ZINPA0,ZINPS0) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS) FIRSTPRIVATE(KF_UV,IIN_STRIDES0,IIN0_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC DATA &
@@ -318,15 +313,9 @@ CONTAINS
 
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
 #ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM) &
-#ifndef __amdflang__
-    ! HAS_DEVICE_ADDR is a data-sharing attribute clause (OpenMP 5.2, sec. 5.4.9) and so
-    ! satisfies DEFAULT(NONE) unaided. amdflang 23.3.0 and 24.1.0-pre reject the combination,
-    ! so DEFAULT(NONE) is dropped there only.
-    !$OMP& DEFAULT(NONE) &
-#endif
-    !$OMP& HAS_DEVICE_ADDR(ZINPA,ZINPS) &
-    !$OMP& FIRSTPRIVATE(KF_FS,IIN_STRIDES0)
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM) ECTRANS_OMP_DEFAULT_CLAUSE &
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINPA,ZINPS) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS) FIRSTPRIVATE(IIN_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(2) PRIVATE(KM,JGL) &

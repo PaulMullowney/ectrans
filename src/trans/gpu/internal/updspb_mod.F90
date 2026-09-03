@@ -105,7 +105,7 @@ MODULE UPDSPB_MOD
   ! R and D are reached only through their ASSOCIATE aliases. Naming the parent types here
   ! makes the runtime walk every allocatable component of TYPE_DIM and TYPE_DISTR and re-copy
   ! each component descriptor on entry, so only the aliases are mapped.
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:R_NTMAX,D_NUMP,D_MYMS,D_NASM0)
+  !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:R_NTMAX,D_NUMP,D_MYMS,D_NASM0)
 #endif
 #ifdef ACCGPU
   !$ACC DATA PRESENT(PSPEC,POA,R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0) ASYNC(1)
@@ -114,8 +114,8 @@ MODULE UPDSPB_MOD
 ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
 ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
 #ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,IASM0,INM) &
-  !$OMP& SHARED(POA,PSPEC) FIRSTPRIVATE(KFIELD)
+  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM) &
+  !$OMP& SHARED(POA,PSPEC) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD)
 #endif
 #ifdef ACCGPU
   !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM) DEFAULT(NONE) COPYIN(KFIELD) &

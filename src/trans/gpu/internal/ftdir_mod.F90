@@ -113,7 +113,7 @@ CONTAINS
     ! entered in the present table, so they cannot be MAP(PRESENT)'d. Nothing here needs
     ! them mapped: this routine has no target compute construct, and EXECUTE_DIR_FFT takes
     ! their device addresses itself via its own USE_DEVICE_ADDR region.
-    !$OMP TARGET DATA MAP(PRESENT,ALLOC: &
+    !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC: &
     !$OMP&                D_NSTAGTF,D_NSTAGT0B,D_NPTRLS,D_NPROCM,D_NPNTGTB0,G_NMEN,G_NLOEN)
 #endif
 

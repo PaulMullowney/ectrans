@@ -13,8 +13,9 @@ module ectrans_device
 !
 ! ecTrans never selects a device itself, so with every GPU visible each rank falls back to
 ! the runtime default and they all pile onto the same one. Masking with ROCR_VISIBLE_DEVICES
-! hides the problem by leaving one device per rank, but it also hides the peer devices, which
-! blocks GPU-to-GPU transports. Choosing the device here keeps all of them visible.
+! or CUDA_VISIBLE_DEVICES hides the problem by leaving one device per rank, but it also hides
+! the peer devices, which blocks GPU-to-GPU transports. Choosing the device here keeps all of
+! them visible.
 !
 ! This has to run before anything touches the GPU -- in particular before acc_init -- which is
 ! earlier than MPI initialisation, so the node-local rank comes from the launcher's
@@ -87,13 +88,24 @@ subroutine ectrans_select_device(kdevice, kndevice, cdsource)
   integer(kind=jpim), intent(out) :: kndevice ! Number of visible devices
   character(len=*), intent(out) :: cdsource   ! Environment variable the rank came from
 
+! The two runtimes expose the same calls under their own names, so the binding has to follow
+! whichever one the target links against. HIP is checked first because hipify-style builds can
+! define both.
+#if defined(HIP)
+#define ECTRANS_DEVICE_SET   'hipSetDevice'
+#define ECTRANS_DEVICE_COUNT 'hipGetDeviceCount'
+#elif defined(CUDA)
+#define ECTRANS_DEVICE_SET   'cudaSetDevice'
+#define ECTRANS_DEVICE_COUNT 'cudaGetDeviceCount'
+#endif
+
 #if defined(HIP) || defined(CUDA)
   interface
-    integer(c_int) function device_set(kdev) bind(c, name='hipSetDevice')
+    integer(c_int) function device_set(kdev) bind(c, name=ECTRANS_DEVICE_SET)
       import :: c_int
       integer(c_int), value :: kdev
     end function device_set
-    integer(c_int) function device_count(kdev) bind(c, name='hipGetDeviceCount')
+    integer(c_int) function device_count(kdev) bind(c, name=ECTRANS_DEVICE_COUNT)
       import :: c_int
       integer(c_int) :: kdev
     end function device_count

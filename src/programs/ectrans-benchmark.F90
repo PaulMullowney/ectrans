@@ -278,7 +278,7 @@ endif
 nthread = oml_max_threads()
 
 ! Report the device binding once MPI is up, so a run that silently shares one GPU across all
-! ranks is visible in the log rather than only in rocm-smi.
+! ranks is visible in the log rather than only in rocm-smi or nvidia-smi.
 if (VERSION == "gpu" .and. verbosity >= 0 .and. myproc == 1) then
   if (igpu_device >= 0) then
     write(nout,'(a,i0,a,a,a)') 'GPU affinity: ', igpu_count, &
@@ -420,7 +420,7 @@ if (lgp_on_gpu) then
     call abor1('ectrans_benchmark: --gp-on-gpu requires the GPU version')
   endif
   if (.not. allocator%device_resident_supported()) then
-    call abor1('ectrans_benchmark: --gp-on-gpu requires an OpenMP offload build')
+    call abor1('ectrans_benchmark: --gp-on-gpu requires an OpenMP offload or OpenACC build')
   endif
   if (lfield_api) then
     call abor1('ectrans_benchmark: --gp-on-gpu is incompatible with --field-api')
@@ -1324,9 +1324,9 @@ subroutine print_help(unit)
   write(nout, "(a)") "    --gp-on-gpu         Allocate grid point fields in device memory and pass&
    & LPGP_ON_GPU to the transforms."
   write(nout, "(a)") "                        Removes the host/device transfers in TRGTOL and&
-   & TRLTOG. OpenMP offload builds only,"
-  write(nout, "(a)") "                        and incompatible with --field-api, --dump-values and&
-   & --dump-checksums"
+   & TRLTOG. GPU builds only (OpenMP offload"
+  write(nout, "(a)") "                        or OpenACC), and incompatible with --field-api,&
+   & --dump-values and --dump-checksums"
   write(nout, "(a)") "    --field-api         Use the field api interface of ecTrans"
   write(nout, "(a)") "    --callmode          The call mode for INV_TRANS and DIR_TRANS (1 or 2; default = 2)"
   write(nout, "(a)") "                        Call mode 1 uses arrays PSPVOR, PSPDIV, PSPSCALAR and&
