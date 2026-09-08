@@ -85,7 +85,14 @@ ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS, ZEPSNM=>FG%ZEPSNM)
 !              ------------------------------------------
 
 #ifdef OMPGPU
-!$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP,R,R_NTMAX,FG,ZEPSNM,PU,PV,PVOR,PDIV)
+! PU/PV/PVOR/PDIV are growing-allocator-backed pointers. Their storage is registered with
+! omp_target_associate_ptr, so ordinary mapping resolves it inside the nested compute
+! constructs, but their dummy descriptors are never entered in the present table and so
+! cannot be MAP(PRESENT)'d.
+! D, R and FG are reached only through their ASSOCIATE aliases. Naming the parent types here
+! makes the runtime walk every allocatable component of those derived types and re-copy each
+! component descriptor on entry, so only the aliases are mapped.
+!$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:D_MYMS,D_NUMP,R_NTMAX,ZEPSNM)
 #endif
 #ifdef ACCGPU
 !$ACC DATA &
@@ -96,8 +103,9 @@ ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS, ZEPSNM=>FG%ZEPSNM)
 !*       1.1      SET N=KM-1 COMPONENT TO 0 FOR U AND V
 
 #ifdef OMPGPU
-!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM) SHARED(D,KF_UV,R,PU,PV) &
-!$OMP& MAP(TO:KF_UV) DEFAULT(NONE) 
+!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM) &
+!$OMP& SHARED(PU,PV) &
+!$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_UV) DEFAULT(ECTRANS_OMP_DEFAULT)
 #endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM) FIRSTPRIVATE(KF_UV) DEFAULT(NONE) &
@@ -119,7 +127,8 @@ ENDDO
 
 #ifdef OMPGPU
 !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) PRIVATE(IR,II,IN,KM,ZKM,ZJN) &
-!$OMP& SHARED(D,R,KF_UV,FG,PVOR,PV,PU,PDIV) DEFAULT(NONE)
+!$OMP& SHARED(PVOR,PV,PU,PDIV) &
+!$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_UV) DEFAULT(ECTRANS_OMP_DEFAULT)
 #endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(IR,II,IN,KM,ZKM,ZJN) FIRSTPRIVATE(KF_UV) DEFAULT(NONE) &

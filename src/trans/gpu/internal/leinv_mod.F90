@@ -173,11 +173,28 @@ CONTAINS
 
 
 #ifdef OMPGPU
+    ! ZINP/ZOUT*/PIA are growing-allocator buffers. Under OMPGPU the allocator hands out
+    ! device pointers directly (see GROWING_ALLOCATOR_MOD: the host pointer is set from
+    ! OMP_TARGET_ALLOC and then self-associated), so their descriptors are never entered
+    ! in the present table and cannot be MAP(PRESENT)'d. Naming them in SHARED instead
+    ! makes each kernel launch look the data region up in the present table and attach it;
+    ! HAS_DEVICE_ADDR states the fact directly and skips both. It does not make the launch
+    ! free: the assertion covers the data, not the dummy's descriptor, which is a host stack
+    ! object holding the bounds and strides the kernel needs to index with. That 48 bytes
+    ! (96 for rank-3 PIA) is still allocated, copied and freed per launch. Removing it would
+    ! mean declaring these assumed-size so no descriptor exists, which the OpenACC path
+    ! below blocks.
+    ! PIA is assumed-shape rather than a POINTER because both callers pass an array section,
+    ! but the section is taken from an allocator buffer in each case (LTINV_MOD's PIA and
+    ! LTDIRAD_MOD's POA1), so its base address is a device address like the rest.
+    ! The GEMM calls below take their device addresses via USE_DEVICE_ADDR, as before.
+    ! D and R are reached only through their ASSOCIATE aliases. Naming the parent types here
+    ! makes the runtime walk every allocatable component of TYPE_DISTR and TYPE_DIM and re-copy
+    ! each component descriptor on entry, so only the aliases are mapped.
     !$OMP TARGET DATA &
-    !$OMP&              MAP(PRESENT,ALLOC:D,D_MYMS,D_NUMP) &
-    !$OMP&              MAP(PRESENT,ALLOC:ZINP,ZOUTS,ZOUTA,ZINP0,ZOUTS0,ZOUTA0) &
-    !$OMP&              MAP(PRESENT,ALLOC:ZAA,ZAS,PIA) &
-    !$OMP&              MAP(PRESENT,ALLOC:R,R_NSMAX,D_OFFSETS_GEMM2)
+    !$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:D_MYMS,D_NUMP) &
+    !$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:ZAA,ZAS) &
+    !$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:R_NSMAX,D_OFFSETS_GEMM2)
 #endif
 #ifdef ACCGPU
     !$ACC DATA PRESENT(D,D_MYMS,D_NUMP) &
@@ -202,7 +219,8 @@ CONTAINS
     ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
     !$OMP& PRIVATE(KM,IA,J) &
-    !$OMP& SHARED(D,R,KF_LEG,ZINP,IIN_STRIDES0,IIN0_STRIDES0) MAP(TO:KF_LEG)
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(IIN_STRIDES0,IIN0_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) &
@@ -265,7 +283,7 @@ CONTAINS
     IF (IMLOC0(1) > 0) THEN
       ! compute m=0 in double precision
 #ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA0,ZINP0,ZOUTA0)
+      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA0)
 #endif
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(ZAA0,ZINP0,ZOUTA0)
@@ -300,7 +318,7 @@ CONTAINS
       KS(IMLOC0(1)) = 0
     ENDIF
 #ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA,ZINP,ZOUTA)
+      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAA)
 #endif
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(ZAA,ZINP,ZOUTA)
@@ -347,7 +365,8 @@ CONTAINS
     ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
     !$OMP& PRIVATE(KM,IS,J) &
-    !$OMP& SHARED(D,R,KF_LEG,ZINP,IIN_STRIDES0,IIN0_STRIDES0) MAP(TO:KF_LEG)
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(IIN_STRIDES0,IIN0_STRIDES0)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS,J) &
@@ -406,7 +425,7 @@ CONTAINS
 
     IF (IMLOC0(1) > 0) THEN
 #ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS0,ZINP0,ZOUTS0)
+      !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS0)
 #endif
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(ZAS0,ZINP0,ZOUTS0)
@@ -441,7 +460,7 @@ CONTAINS
       KS(IMLOC0(1)) = 0
     ENDIF
 #ifdef OMPGPU
-    !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS,ZINP,ZOUTS)
+    !$OMP TARGET DATA USE_DEVICE_ADDR(ZAS)
 #endif
 #ifdef ACCGPU
     !$ACC HOST_DATA USE_DEVICE(ZAS,ZINP,ZOUTS)

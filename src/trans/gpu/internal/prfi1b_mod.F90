@@ -84,7 +84,16 @@ MODULE PRFI1B_MOD
   !$ACC DATA PRESENT(D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0,PIA,PSPEC) ASYNC(1)
 #endif
 #ifdef OMPGPU
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:D,D_NUMP,R,R_NSMAX,D_MYMS,D_NASM0,PIA,PSPEC)
+  ! PIA and PSPEC are dropped from the present check, not from the data environment.
+  ! PIA's storage comes from the growing allocator (omp_target_alloc +
+  ! omp_target_associate_ptr) and PSPEC is a caller-supplied spectral array already
+  ! resident on the device. Neither descriptor is entered in the present table, so
+  ! MAP(PRESENT) cannot succeed, but both remain in SHARED on the compute construct
+  ! below and resolve through ordinary mapping.
+  ! D and R are reached only through their ASSOCIATE aliases. Naming the parent types
+  ! here makes the runtime walk every allocatable component of TYPE_DISTR and TYPE_DIM
+  ! and re-copy each component descriptor on entry, so only the aliases are mapped.
+  !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:D_NUMP,R_NSMAX,D_MYMS,D_NASM0)
 #endif
 
   IF(PRESENT(KFLDPTR)) THEN
@@ -96,8 +105,9 @@ MODULE PRFI1B_MOD
     !loop over wavenumber
 
 #ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) &
-    !$OMP& PRIVATE(KM,IASM0,INM) SHARED(KFIELDS,KDIM,D,R,PIA,PSPEC) MAP(TO:KFIELDS)
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) &
+    !$OMP& PRIVATE(KM,IASM0,INM) &
+    !$OMP& SHARED(PIA,PSPEC) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELDS)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IASM0,INM) &

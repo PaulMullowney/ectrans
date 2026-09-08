@@ -26,6 +26,7 @@ use mpl_module
 use yomgstats, only: jpmaxstat, gstats_lstats => lstats
 use yomhook, only : dr_hook_init
 use ectrans_memory, only : allocator
+use ectrans_device, only : ectrans_select_device
 use ec_checksum_mod, only : fletcher16_hex
 
 #if USE_FIELD_API
@@ -158,6 +159,9 @@ logical :: lmpoff = .false. ! Message passing switch
 integer :: verbosity = 0
 
 integer(kind=jpim) :: nproc ! Number of procs
+integer(kind=jpim) :: igpu_device ! GPU bound to this rank, -1 if the runtime default was kept
+integer(kind=jpim) :: igpu_count  ! Number of GPUs visible to this rank
+character(len=32)  :: cgpu_source ! Launcher variable the node-local rank came from
 integer(kind=jpim) :: nthread
 integer(kind=jpim) :: nprgpns ! Grid-point decomp
 integer(kind=jpim) :: nprgpew ! Grid-point decomp
@@ -193,6 +197,7 @@ type(fields_lists) :: ylf
 
 logical :: ldump_values = .false.
 logical :: lpinning = .false.
+logical :: lgp_on_gpu = .false.
 logical :: ldump_checksums = .false.
 
 integer, external :: ec_mpirank
@@ -236,12 +241,16 @@ if (VERSION == "gpu") then
   lpinning = .true.
 endif
 
+! Bind this rank to its own GPU before anything initialises a device context, which includes
+! the acc_init inside get_command_line_arguments. A no-op when only one device is visible.
+call ectrans_select_device(igpu_device, igpu_count, cgpu_source)
+
 ! Setup
 call get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, nlev, lvordiv, lscders, &
   &                             luvder, luseflt, nopt_mem_tr, nproma, npromatr, verbosity, &
   &                             ldump_values, lprint_norms, lmeminfo, nprtrv, nprtrw, ncheck, &
   &                             lpinning, lfield_api, icall_mode, ldump_checksums, iters_checksums, &
-  &                             cchecksums_path, lalloperm)
+  &                             cchecksums_path, lalloperm, lgp_on_gpu)
 if (iters_checksums < 0) then
   if (iters_warmup > 0) then
     iters_checksums = iters_warmup
@@ -267,6 +276,21 @@ else
   lsync_trans = .false.
 endif
 nthread = oml_max_threads()
+
+! Report the device binding once MPI is up, so a run that silently shares one GPU across all
+! ranks is visible in the log rather than only in rocm-smi or nvidia-smi.
+if (VERSION == "gpu" .and. verbosity >= 0 .and. myproc == 1) then
+  if (igpu_device >= 0) then
+    write(nout,'(a,i0,a,a,a)') 'GPU affinity: ', igpu_count, &
+      & ' devices visible, one bound per rank from ', trim(cgpu_source), &
+      & ' (rank 1 -> device 0)'
+  elseif (igpu_count > 1) then
+    write(nout,'(a,i0,a)') 'GPU affinity: WARNING ', igpu_count, &
+      & ' devices visible but no launcher rank found; all ranks will share one device'
+  else
+    write(nout,'(a)') 'GPU affinity: 1 device visible per rank (externally masked)'
+  endif
+endif
 
 call dr_hook_init()
 
@@ -389,6 +413,26 @@ if (verbosity >= 1 .and. myproc == 1) then
 endif
 call allocator%set_pinning(lpinning)
 
+! Grid point fields in device memory are unreachable from the host, so every option that
+! reads or writes them outside the transforms is incompatible with it.
+if (lgp_on_gpu) then
+  if (VERSION /= "gpu") then
+    call abor1('ectrans_benchmark: --gp-on-gpu requires the GPU version')
+  endif
+  if (.not. allocator%device_resident_supported()) then
+    call abor1('ectrans_benchmark: --gp-on-gpu requires an OpenMP offload or OpenACC build')
+  endif
+  if (lfield_api) then
+    call abor1('ectrans_benchmark: --gp-on-gpu is incompatible with --field-api')
+  endif
+  if (ldump_values) then
+    call abor1('ectrans_benchmark: --gp-on-gpu is incompatible with --dump-values')
+  endif
+  if (ldump_checksums) then
+    call abor1('ectrans_benchmark: --gp-on-gpu is incompatible with --dump-checksums')
+  endif
+endif
+
 !===================================================================================================
 ! Setup gstats
 !===================================================================================================
@@ -466,6 +510,7 @@ if (verbosity >= 0 .and. myproc == 1) then
   write(nout,'("luvder     ",l1)') luvder
   write(nout,'("lfield_api ",l1)') lfield_api
   write(nout,'("lalloperm  ",l1)') lalloperm
+  write(nout,'("lgp_on_gpu ",l1)') lgp_on_gpu
   write(nout,'(" ")')
   write(nout,'(a)') '======= End of runtime parameters ======='
   write(nout,'(" ")')
@@ -556,7 +601,9 @@ if (lscders) then
   inum_sc_2d_fields = inum_sc_2d_fields * 3
 endif
 
-! Finally, allocate grid point arrays
+! Finally, allocate grid point arrays. Only these become device-resident under --gp-on-gpu;
+! the spectral arrays above stay on the host because the benchmark reads them for the norms.
+call allocator%set_device_resident(lgp_on_gpu)
 if (icall_mode == 1) then
   itotal_fields = nflevg * (inum_wind_fields + inum_sc_3d_fields) + inum_sc_2d_fields
   call allocator%allocate('zgp', zgp, [nproma,itotal_fields,ngpblks])
@@ -565,6 +612,7 @@ else
   call allocator%allocate('zgp3a', zgp3a, [nproma,nflevg,inum_sc_3d_fields,ngpblks])
   call allocator%allocate('zgp2', zgp2, [nproma,inum_sc_2d_fields,ngpblks])
 endif
+call allocator%set_device_resident(.false.)
 
 #if USE_FIELD_API
 if (lfield_api) then
@@ -700,12 +748,13 @@ do jstep = 1, iters+iters_warmup
     call inv_trans(pspvor=zspvor, pspdiv=zspdiv, pspscalar=zspscalar, pgp=zgp, &
       &            kvsetuv=ivset, kvsetsc=ivsetsc, &
       &            ldscders=lscders, ldvorgp=lvordiv, lddivgp=lvordiv, lduvder=luvder, &
-      &            kproma=nproma)
+      &            kproma=nproma, lpgp_on_gpu=lgp_on_gpu)
   else
     call inv_trans(pspvor=zspvor, pspdiv=zspdiv, pspsc3a=zspsc3a, pspsc2=zspsc2, pgpuv=zgpuv, &
       &            pgp3a=zgp3a, pgp2=zgp2, &
       &            kvsetuv=ivset, kvsetsc2=ivsetsc2, kvsetsc3a=ivset, &
-      &            ldscders=lscders, ldvorgp=lvordiv, lddivgp=lvordiv, lduvder=luvder, kproma=nproma)
+      &            ldscders=lscders, ldvorgp=lvordiv, lddivgp=lvordiv, lduvder=luvder, kproma=nproma, &
+      &            lpgp_on_gpu=lgp_on_gpu)
   endif
 
   if (ldump_checksums .and. jstep <= iters_checksums) then
@@ -780,12 +829,14 @@ do jstep = 1, iters+iters_warmup
 #endif
   else if (icall_mode == 1) then
     call dir_trans(pgp=zgp(:,ipgp_start:ipgp_end,:), pspvor=zspvor, pspdiv=zspdiv, &
-      &            pspscalar=zspscalar, kvsetuv=ivset, kvsetsc=ivsetsc, kproma=nproma)
+      &            pspscalar=zspscalar, kvsetuv=ivset, kvsetsc=ivsetsc, kproma=nproma, &
+      &            lpgp_on_gpu=lgp_on_gpu)
   else
     call dir_trans(pgpuv=zgpuv(:,:,ipgpuv_start:ipgpuv_end,:), &
       &            pgp3a=zgp3a(:,:,1:nfld,:), pgp2=zgp2(:,1:1,:), &
       &            pspvor=zspvor, pspdiv=zspdiv, pspsc3a=zspsc3a, pspsc2=zspsc2, &
-      &            kvsetuv=ivset, kvsetsc2=ivsetsc2, kvsetsc3a=ivset, kproma=nproma)
+      &            kvsetuv=ivset, kvsetsc2=ivsetsc2, kvsetsc3a=ivset, kproma=nproma, &
+      &            lpgp_on_gpu=lgp_on_gpu)
   endif
 
   if (ldump_checksums .and. jstep <= iters_checksums) then
@@ -1069,6 +1120,7 @@ else
   call allocator%deallocate('zspsc2', zspsc2)
 endif
 
+call allocator%set_device_resident(lgp_on_gpu)
 if (icall_mode == 1) then
   call allocator%deallocate('zgp', zgp)
 else
@@ -1076,6 +1128,7 @@ else
   call allocator%deallocate('zgp3a', zgp3a)
   call allocator%deallocate('zgp2', zgp2)
 endif
+call allocator%set_device_resident(.false.)
 
 !===================================================================================================
 
@@ -1268,6 +1321,12 @@ subroutine print_help(unit)
    & tolerance for correctness checking"
   write(nout, "(a)") "    --no-pinning        Disable memory-pinning (a.k.a. page-locked memory) &
    & to allocate fields for GPU version"
+  write(nout, "(a)") "    --gp-on-gpu         Allocate grid point fields in device memory and pass&
+   & LPGP_ON_GPU to the transforms."
+  write(nout, "(a)") "                        Removes the host/device transfers in TRGTOL and&
+   & TRLTOG. GPU builds only (OpenMP offload"
+  write(nout, "(a)") "                        or OpenACC), and incompatible with --field-api,&
+   & --dump-values and --dump-checksums"
   write(nout, "(a)") "    --field-api         Use the field api interface of ecTrans"
   write(nout, "(a)") "    --callmode          The call mode for INV_TRANS and DIR_TRANS (1 or 2; default = 2)"
   write(nout, "(a)") "                        Call mode 1 uses arrays PSPVOR, PSPDIV, PSPSCALAR and&
@@ -1308,7 +1367,7 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
   &                                   verbosity, ldump_values, lprint_norms, lmeminfo, nprtrv, &
   &                                   nprtrw, ncheck, lpinning, lfield_api, icall_mode, ldump_checksums, &
   &                                   iters_checksums, &
-  &                                   cchecksums_path, lalloperm)
+  &                                   cchecksums_path, lalloperm, lgp_on_gpu)
 
 #ifdef _OPENACC
   use openacc, only: acc_init, acc_get_device_type
@@ -1339,6 +1398,8 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
   integer, intent(inout) :: ncheck          ! The multiplier of the machine epsilon used as a
                                             ! tolerance for correctness checking
   logical, intent(inout) :: lpinning        ! Use memory-pinning (a.k.a. page-locked memory) to allocate fields for GPU version
+  logical, intent(inout) :: lgp_on_gpu      ! Allocate grid point fields in device memory and tell
+                                            ! inv_trans/dir_trans they are already resident there
   logical, intent(inout) :: lfield_api
   integer, intent(inout) :: icall_mode      ! The call mode for inv_trans and dir_trans
                                             ! 1: pspvor, pspdiv, pspscalar, pgp
@@ -1409,6 +1470,7 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
       case('--nprtrw'); nprtrw = get_int_value('--nprtrw', iarg)
       case('-c', '--check'); ncheck = get_int_value('-c', iarg)
       case('--no-pinning'); lpinning = .False.
+      case('--gp-on-gpu'); lgp_on_gpu = .True.
       case('--field-api'); lfield_api = .True.
       case('--callmode')
           icall_mode = get_int_value('--callmode', iarg)
@@ -2216,6 +2278,17 @@ subroutine gstats_labels
   call gstats_label(157, '   ', 'FTINV_CTL      - L to G transposition')
   call gstats_label(158, '   ', 'FTDIR_CTL      - G to L transposition')
   call gstats_label(400, '   ', 'GSTATS         - GSTATS itself')
+  ! Kernel/MPI split inside the two gridpoint transpositions.
+  call gstats_label(450, '   ', 'TRLTOG kernel  - local contribution')
+  call gstats_label(451, '   ', 'TRLTOG kernel  - pack send buffer')
+  call gstats_label(452, '   ', 'TRLTOG MPI     - post recv/send')
+  call gstats_label(453, '   ', 'TRLTOG MPI     - wait for exchange')
+  call gstats_label(454, '   ', 'TRLTOG kernel  - unpack recv buffer')
+  call gstats_label(460, '   ', 'TRGTOL kernel  - pack send buffer')
+  call gstats_label(461, '   ', 'TRGTOL MPI     - post recv/send')
+  call gstats_label(462, '   ', 'TRGTOL kernel  - local contribution')
+  call gstats_label(463, '   ', 'TRGTOL MPI     - wait for exchange')
+  call gstats_label(464, '   ', 'TRGTOL kernel  - unpack recv buffer')
 
 end subroutine gstats_labels
 

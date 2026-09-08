@@ -97,7 +97,15 @@ MODULE UPDSPB_MOD
   !              -----------------------
 
 #ifdef OMPGPU
-  !$OMP TARGET DATA MAP(PRESENT,ALLOC:PSPEC,POA,R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0)
+  ! POA is a growing-allocator buffer, registered with omp_target_associate_ptr; PSPEC is an
+  ! output spectral array already mapped MAP(FROM) by the caller (LTDIR). Both are therefore
+  ! resident on the device and resolve through ordinary mapping from the SHARED list below,
+  ! but neither dummy descriptor is entered in the present table, so MAP(PRESENT) on them
+  ! cannot succeed.
+  ! R and D are reached only through their ASSOCIATE aliases. Naming the parent types here
+  ! makes the runtime walk every allocatable component of TYPE_DIM and TYPE_DISTR and re-copy
+  ! each component descriptor on entry, so only the aliases are mapped.
+  !$OMP TARGET DATA MAP(ECTRANS_MAP_PRESENT_ALLOC:R_NTMAX,D_NUMP,D_MYMS,D_NASM0)
 #endif
 #ifdef ACCGPU
   !$ACC DATA PRESENT(PSPEC,POA,R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0) ASYNC(1)
@@ -106,8 +114,8 @@ MODULE UPDSPB_MOD
 ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
 ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
 #ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,IASM0,INM) &
-  !$OMP& SHARED(D,R,KFIELD,POA,PSPEC) MAP(TO:KFIELD)
+  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM) &
+  !$OMP& SHARED(POA,PSPEC) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD)
 #endif
 #ifdef ACCGPU
   !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM) DEFAULT(NONE) COPYIN(KFIELD) &
