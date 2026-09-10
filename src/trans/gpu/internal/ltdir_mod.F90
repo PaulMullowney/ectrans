@@ -154,9 +154,18 @@ CONTAINS
     INTEGER(KIND=JPIM) :: IFIRST
 
     REAL(KIND=JPHOOK) :: ZHOOK_HANDLE
-    REAL(KIND=JPRB), POINTER :: POA1_L(:), POA1(:,:,:)
-    REAL(KIND=JPRB), POINTER :: POA2_L(:), POA2(:,:,:)
-    REAL(KIND=JPRB), POINTER :: PU(:,:,:), PV(:,:,:), PVOR(:,:,:), PDIV(:,:,:)
+    REAL(KIND=JPRB), POINTER :: POA1_L(:), POA2_L(:)
+    ! CONTIGUOUS so that the base element of a field slice may be sequence-associated with
+    ! the explicit-shape dummies of UVTVD (F2018 15.5.2.4). Both are whole-array views of
+    ! an allocator slab, so they are contiguous.
+    REAL(KIND=JPRB), POINTER, CONTIGUOUS :: POA1(:,:,:), POA2(:,:,:)
+    REAL(KIND=JPRB), POINTER :: PVOR(:,:,:), PDIV(:,:,:)
+
+    ! Leading dimensions of POA1 and POA2, and the offset of each field slice within them.
+    ! UVTVD takes the slices as explicit-shape dummies, which carry no descriptor and so
+    ! need the parent leading dimension alongside each slice's base element.
+    INTEGER(KIND=JPIM) :: IPOA1_LD, IPOA2_LD
+    INTEGER(KIND=JPIM) :: IUOFF, IVOFF, IVOROFF, IDIVOFF
     REAL(KIND=JPRBT), POINTER :: ZOUT(:)
     REAL(KIND=JPRD), POINTER :: ZOUT0(:)
     TYPE(BUFFERED_ALLOCATOR), INTENT(IN) :: ALLOCATOR
@@ -190,12 +199,14 @@ CONTAINS
     CALL ASSIGN_PTR(POA1_L, GET_ALLOCATION(ALLOCATOR, HLTDIR%HOUT_AND_POA),&
         & IALLOC_POS, IALLOC_SZ, SET_STREAM=1)
     CALL C_F_POINTER(C_LOC(POA1_L), POA1, (/ 2*KF_FS, R%NTMAX+3, D%NUMP /))
+    IPOA1_LD = 2*KF_FS
     IALLOC_POS = IALLOC_POS + IALLOC_SZ
 
     IALLOC_SZ = ALIGN(4_JPIB*KF_UV*(R%NTMAX+3)*D%NUMP*C_SIZEOF(POA2_L(1)),128)
     CALL ASSIGN_PTR(POA2_L, GET_ALLOCATION(ALLOCATOR, HLTDIR%HOUT_AND_POA),&
         & IALLOC_POS, IALLOC_SZ, SET_STREAM=1)
     CALL C_F_POINTER(C_LOC(POA2_L), POA2, (/ 4*KF_UV, R%NTMAX+3, D%NUMP /))
+    IPOA2_LD = 4*KF_UV
     IALLOC_POS = IALLOC_POS + IALLOC_SZ
 
     ! ZOUT
@@ -236,17 +247,20 @@ CONTAINS
     IF( KF_UV > 0 ) THEN
        ! U and V are in POA1
        IFIRST = 0
-       PU => POA1(IFIRST+1:IFIRST+2*KF_UV,:,:)
+       IUOFF = IFIRST
        IFIRST = IFIRST + 2*KF_UV
-       PV => POA1(IFIRST+1:IFIRST+2*KF_UV,:,:)
+       IVOFF = IFIRST
        ! Compute VOR and DIV ino POA2
        IFIRST = 0
+       IVOROFF = IFIRST
        PVOR => POA2(IFIRST+1:IFIRST+2*KF_UV,:,:)
        IFIRST = IFIRST + 2*KF_UV
+       IDIVOFF = IFIRST
        PDIV => POA2(IFIRST+1:IFIRST+2*KF_UV,:,:)
 
        ! Compute vorticity and divergence
-       CALL UVTVD(KF_UV,PU,PV,PVOR,PDIV)
+       CALL UVTVD(KF_UV,IPOA1_LD,IPOA2_LD,POA1(IUOFF+1,1,1),POA1(IVOFF+1,1,1), &
+         &        POA2(IVOROFF+1,1,1),POA2(IDIVOFF+1,1,1))
 
        ! Write back. Note, if we have UV, the contract says we *must* have VOR/DIV
        CALL UPDSPB(KF_UV,PVOR,PSPVOR,KFLDPTRUV)

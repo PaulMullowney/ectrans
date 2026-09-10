@@ -114,6 +114,11 @@ CONTAINS
     REAL(KIND=JPHOOK) :: ZHOOK_HANDLE
     INTEGER(KIND=JPIM) :: IERROR
 
+    ! An element of a non-CONTIGUOUS pointer array may not be sequence-associated with an
+    ! explicit-shape dummy (F2018 15.5.2.4), so the copy-to-self body is handed these
+    ! aliases instead. They address the same allocator slab, which is contiguous.
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: ZPFBUF_C(:),ZPFBUF_IN_C(:)
+
     TYPE(BUFFERED_ALLOCATOR), INTENT(IN) :: ALLOCATOR
     TYPE(TRLTOM_HANDLE), INTENT(IN) :: HTRLTOM
 #ifdef USE_RAW_MPI
@@ -136,6 +141,9 @@ CONTAINS
 
     CALL ASSIGN_PTR(PFBUF, GET_ALLOCATION(ALLOCATOR, HTRLTOM%HPFBUF),&
         & 1_JPIB, 2_JPIB*D%NLENGT1B*KF_FS*C_SIZEOF(PFBUF(1)))
+
+    ZPFBUF_C => PFBUF
+    ZPFBUF_IN_C => PFBUF_IN
 
 #ifdef OMPGPU
     ! PFBUF/PFBUF_IN are growing-allocator buffers whose descriptors are never entered in
@@ -168,20 +176,9 @@ CONTAINS
           TO_SEND = FROM_SEND + ILENS(IRANK) - 1
           FROM_RECV = IOFFR(IRANK) + 1
           TO_RECV = FROM_RECV + ILENR(IRANK) - 1
-#ifdef OMPGPU
-          !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO ECTRANS_OMP_DEFAULT_CLAUSE &
-          !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PFBUF,PFBUF_IN) &
-          !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(FROM_SEND,TO_SEND) FIRSTPRIVATE(FROM_RECV,TO_RECV)
-          DO JPOS=FROM_SEND,TO_SEND
-             PFBUF(JPOS-FROM_SEND+FROM_RECV) = PFBUF_IN(JPOS)
-          ENDDO
-          !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
-#ifdef ACCGPU
-          !$ACC KERNELS ASYNC(1)
-          PFBUF(FROM_RECV:TO_RECV) = PFBUF_IN(FROM_SEND:TO_SEND)
-          !$ACC END KERNELS
-#endif
+          CALL TRLTOM_COPY_TO_SELF(ZPFBUF_C(1),SIZE(ZPFBUF_C,KIND=JPIB), &
+            &                      ZPFBUF_IN_C(1),SIZE(ZPFBUF_IN_C,KIND=JPIB), &
+            &                      FROM_SEND,TO_SEND,FROM_RECV,TO_RECV)
           ILENS(IRANK) = 0
           ILENR(IRANK) = 0
       ENDIF
@@ -270,4 +267,40 @@ CONTAINS
     IF (LHOOK) CALL DR_HOOK('TRLTOM',1,ZHOOK_HANDLE)
     !     ------------------------------------------------------------------
   END SUBROUTINE TRLTOM
+
+  ! The copy-to-self body lives in its own procedure so that both buffers can be
+  ! explicit-shape dummies. A POINTER actual is described by a dope vector, and the
+  ! compiler places that dope vector in the device data environment on every launch: it
+  ! creates a map entry, copies 48 bytes and tears the entry down again. Neither
+  ! HAS_DEVICE_ADDR nor an enclosing USE_DEVICE_ADDR region suppresses that. An
+  ! explicit-shape dummy is described entirely by its extents, which travel as
+  ! FIRSTPRIVATE scalars, so no descriptor has to reach the device at all.
+  SUBROUTINE TRLTOM_COPY_TO_SELF(PFBUF,KBUF,PFBUF_IN,KBUF_IN, &
+    &                            KFROM_SEND,KTO_SEND,KFROM_RECV,KTO_RECV)
+    USE PARKIND_ECTRANS, ONLY: JPIM, JPRBT, JPIB
+
+    IMPLICIT NONE
+
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KBUF, KBUF_IN
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KFROM_SEND, KTO_SEND, KFROM_RECV, KTO_RECV
+    REAL(KIND=JPRBT),   INTENT(INOUT) :: PFBUF(KBUF)
+    REAL(KIND=JPRBT),   INTENT(IN)    :: PFBUF_IN(KBUF_IN)
+
+    INTEGER(KIND=JPIB) :: JPOS
+
+#ifdef OMPGPU
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO ECTRANS_OMP_DEFAULT_CLAUSE &
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PFBUF,PFBUF_IN) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFROM_SEND,KTO_SEND) FIRSTPRIVATE(KFROM_RECV,KTO_RECV)
+    DO JPOS=KFROM_SEND,KTO_SEND
+       PFBUF(JPOS-KFROM_SEND+KFROM_RECV) = PFBUF_IN(JPOS)
+    ENDDO
+    !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
+#endif
+#ifdef ACCGPU
+    !$ACC KERNELS ASYNC(1)
+    PFBUF(KFROM_RECV:KTO_RECV) = PFBUF_IN(KFROM_SEND:KTO_SEND)
+    !$ACC END KERNELS
+#endif
+  END SUBROUTINE TRLTOM_COPY_TO_SELF
 END MODULE TRLTOM_MOD

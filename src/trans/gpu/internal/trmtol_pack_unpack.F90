@@ -100,12 +100,18 @@ CONTAINS
     TYPE(BUFFERED_ALLOCATOR), INTENT(IN) :: ALLOCATOR
     TYPE(TRMTOL_PACK_HANDLE), INTENT(IN) :: HTRMTOL_PACK
     REAL(KIND=JPRB), INTENT(OUT), POINTER :: FOUBUF_IN(:)
-    REAL(KIND=JPRBT), INTENT(IN) :: ZOUTS(:), ZOUTA(:)
-    REAL(KIND=JPRD), INTENT(IN) :: ZOUTS0(:), ZOUTA0(:)
+    ! CONTIGUOUS so these can be sequence-associated with the explicit-shape dummies of
+    ! TRMTOL_PACK_KERNEL without the compiler allowing for a packing temporary.
+    REAL(KIND=JPRBT), INTENT(IN), CONTIGUOUS :: ZOUTS(:), ZOUTA(:)
+    REAL(KIND=JPRD), INTENT(IN), CONTIGUOUS :: ZOUTS0(:), ZOUTA0(:)
     INTEGER(KIND=JPIM), INTENT(IN)  :: KF_LEG
 
     !     LOCAL
     REAL(KIND=JPRBT) :: ZAOA, ZSOA
+
+    ! An element of a non-CONTIGUOUS pointer array may not be sequence-associated with an
+    ! explicit-shape dummy (F2018 15.5.2.4); this alias addresses the same allocator slab.
+    REAL(KIND=JPRB), POINTER, CONTIGUOUS :: ZFOUBUF_IN_C(:)
 
     INTEGER(KIND=JPIM) :: KMLOC, KM, ISL, JGL, JK, IGLS
     INTEGER(KIND=JPIB) :: OFFSET1, OFFSET2
@@ -142,52 +148,14 @@ CONTAINS
     !$ACC&     PRESENT(ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,FOUBUF_IN,D_OFFSETS_GEMM1)
 #endif
 
-#ifdef OMPGPU
-    ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
-    ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,FOUBUF_IN) &
-    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(IOUT_STRIDES0,IOUT0_STRIDES0)
-#endif
-#ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
-    !$ACC&              FIRSTPRIVATE(KF_LEG,IOUT_STRIDES0,IOUT0_STRIDES0) &
-#ifndef _CRAYFTN
-    !$ACC& ASYNC(1)
-#else
-    !$ACC&
-#endif
-#endif
-    DO KMLOC=1,D_NUMP
-      DO JGL=1,R_NDGNH
-        DO JK=1,2*KF_LEG
-          KM = D_MYMS(KMLOC)
-          ISL = R_NDGNH-G_NDGLU(KM)+1
-          IF (JGL >= ISL) THEN
-            !(DO JGL=ISL,R_NDGNH)
-            IGLS = R_NDGL+1-JGL
-            OFFSET1 = 2_JPIB*D_NPNTGTB1(KMLOC,JGL )*KF_LEG
-            OFFSET2 = 2_JPIB*D_NPNTGTB1(KMLOC,IGLS)*KF_LEG
+    ZFOUBUF_IN_C => FOUBUF_IN
 
-            IF(KM /= 0) THEN
-              ZSOA = ZOUTS(JK+(JGL-ISL)*IOUT_STRIDES0+D_OFFSETS_GEMM1(KMLOC)*IOUT_STRIDES0)
-              ZAOA = ZOUTA(JK+(JGL-ISL)*IOUT_STRIDES0+D_OFFSETS_GEMM1(KMLOC)*IOUT_STRIDES0)
-            ELSEIF (MOD((JK-1),2) == 0) THEN
-              ZSOA = ZOUTS0((JK-1)/2+1+(JGL-1)*IOUT0_STRIDES0)
-              ZAOA = ZOUTA0((JK-1)/2+1+(JGL-1)*IOUT0_STRIDES0)
-            ELSE
-              ! Imaginary values of KM=0 is zero, though I don't think we care
-              ZSOA = 0_JPRBT
-              ZAOA = 0_JPRBT
-            ENDIF
-
-            FOUBUF_IN(OFFSET1+JK) = ZAOA+ZSOA
-            FOUBUF_IN(OFFSET2+JK) = ZSOA-ZAOA
-          ENDIF
-        ENDDO
-      ENDDO
-    ENDDO
+    CALL TRMTOL_PACK_KERNEL(ZOUTS,ZOUTA,SIZE(ZOUTS,KIND=JPIB), &
+      &                     ZOUTS0,ZOUTA0,SIZE(ZOUTS0,KIND=JPIB), &
+      &                     ZFOUBUF_IN_C(1),SIZE(FOUBUF_IN,KIND=JPIB), &
+      &                     D_MYMS,D_OFFSETS_GEMM1,D_NPNTGTB1,D_NUMP,R_NDGL, &
+      &                     G_NDGLU,SIZE(G_NDGLU)-1, &
+      &                     KF_LEG,R_NDGNH,IOUT_STRIDES0,IOUT0_STRIDES0)
 
 #ifdef OMPGPU
     !$OMP END TARGET DATA
@@ -202,6 +170,84 @@ CONTAINS
 
     END ASSOCIATE
   END SUBROUTINE TRMTOL_PACK
+
+  ! Pack body with explicit-shape dummy arguments. A POINTER or assumed-shape actual is
+  ! described by a dope vector, and the compiler places that dope vector in the device data
+  ! environment on every launch: create map entry, copy 48 bytes, tear it down. Explicit
+  ! shape carries the extents as FIRSTPRIVATE scalars instead, so nothing is copied.
+  SUBROUTINE TRMTOL_PACK_KERNEL(PZOUTS,PZOUTA,KOUT_SIZE,PZOUTS0,PZOUTA0,KOUT0_SIZE, &
+    &                           PFOUBUF_IN,KFOUBUF_IN, &
+    &                           KMYMS,KOFFSETS_GEMM1,KNPNTGTB1,KNUMP,KNDGL, &
+    &                           KNDGLU,KNSMAX, &
+    &                           KF_LEG,KNDGNH,KOUT_STRIDES0,KOUT0_STRIDES0)
+    USE PARKIND_ECTRANS, ONLY: JPIM, JPRB, JPRBT, JPRD, JPIB
+
+    IMPLICIT NONE
+
+    INTEGER(KIND=JPIB), INTENT(IN)  :: KOUT_SIZE, KOUT0_SIZE, KFOUBUF_IN
+    INTEGER(KIND=JPIM), INTENT(IN)  :: KNUMP, KNDGL, KNSMAX
+    INTEGER(KIND=JPIM), INTENT(IN)  :: KF_LEG, KNDGNH, KOUT_STRIDES0, KOUT0_STRIDES0
+    REAL(KIND=JPRBT),   INTENT(IN)  :: PZOUTS(KOUT_SIZE), PZOUTA(KOUT_SIZE)
+    REAL(KIND=JPRD),    INTENT(IN)  :: PZOUTS0(KOUT0_SIZE), PZOUTA0(KOUT0_SIZE)
+    REAL(KIND=JPRB),    INTENT(OUT) :: PFOUBUF_IN(KFOUBUF_IN)
+    INTEGER(KIND=JPIM), INTENT(IN)  :: KMYMS(KNUMP)
+    INTEGER(KIND=JPIB), INTENT(IN)  :: KOFFSETS_GEMM1(KNUMP+1)
+    INTEGER(KIND=JPIM), INTENT(IN)  :: KNPNTGTB1(KNUMP,KNDGL)
+    INTEGER(KIND=JPIM), INTENT(IN)  :: KNDGLU(0:KNSMAX)
+
+    REAL(KIND=JPRBT) :: ZAOA, ZSOA
+    INTEGER(KIND=JPIM) :: KMLOC, KM, ISL, JGL, JK, IGLS
+    INTEGER(KIND=JPIB) :: OFFSET1, OFFSET2
+
+#ifdef OMPGPU
+    ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
+    ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PZOUTS,PZOUTA,PZOUTS0,PZOUTA0,PFOUBUF_IN) &
+    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM1,KNPNTGTB1,KNDGLU) &
+    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(KOUT_STRIDES0,KOUT0_STRIDES0)
+#endif
+#ifdef ACCGPU
+    !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
+    !$ACC&              PRESENT(KMYMS,KOFFSETS_GEMM1,KNPNTGTB1,KNDGLU) &
+    !$ACC&              FIRSTPRIVATE(KF_LEG,KOUT_STRIDES0,KOUT0_STRIDES0) &
+#ifndef _CRAYFTN
+    !$ACC& ASYNC(1)
+#else
+    !$ACC&
+#endif
+#endif
+    DO KMLOC=1,KNUMP
+      DO JGL=1,KNDGNH
+        DO JK=1,2*KF_LEG
+          KM = KMYMS(KMLOC)
+          ISL = KNDGNH-KNDGLU(KM)+1
+          IF (JGL >= ISL) THEN
+            !(DO JGL=ISL,KNDGNH)
+            IGLS = KNDGL+1-JGL
+            OFFSET1 = 2_JPIB*KNPNTGTB1(KMLOC,JGL )*KF_LEG
+            OFFSET2 = 2_JPIB*KNPNTGTB1(KMLOC,IGLS)*KF_LEG
+
+            IF(KM /= 0) THEN
+              ZSOA = PZOUTS(JK+(JGL-ISL)*KOUT_STRIDES0+KOFFSETS_GEMM1(KMLOC)*KOUT_STRIDES0)
+              ZAOA = PZOUTA(JK+(JGL-ISL)*KOUT_STRIDES0+KOFFSETS_GEMM1(KMLOC)*KOUT_STRIDES0)
+            ELSEIF (MOD((JK-1),2) == 0) THEN
+              ZSOA = PZOUTS0((JK-1)/2+1+(JGL-1)*KOUT0_STRIDES0)
+              ZAOA = PZOUTA0((JK-1)/2+1+(JGL-1)*KOUT0_STRIDES0)
+            ELSE
+              ! Imaginary values of KM=0 is zero, though I don't think we care
+              ZSOA = 0_JPRBT
+              ZAOA = 0_JPRBT
+            ENDIF
+
+            PFOUBUF_IN(OFFSET1+JK) = ZAOA+ZSOA
+            PFOUBUF_IN(OFFSET2+JK) = ZSOA-ZAOA
+          ENDIF
+        ENDDO
+      ENDDO
+    ENDDO
+  END SUBROUTINE TRMTOL_PACK_KERNEL
 
   FUNCTION PREPARE_TRMTOL_UNPACK(ALLOCATOR,KF_FS) RESULT(HTRMTOL_UNPACK)
     USE PARKIND_ECTRANS,        ONLY: JPIM, JPRBT, JPIB
@@ -259,11 +305,17 @@ USE ISO_C_BINDING,          ONLY: C_SIZEOF
 
 IMPLICIT NONE
 
-REAL(KIND=JPRBT), INTENT(IN) :: FOUBUF(:)
+! CONTIGUOUS so FOUBUF can be sequence-associated with the explicit-shape dummy of
+! TRMTOL_UNPACK_KERNEL without the compiler allowing for a packing temporary.
+REAL(KIND=JPRBT), INTENT(IN), CONTIGUOUS :: FOUBUF(:)
 REAL(KIND=JPRBT), INTENT(OUT), POINTER :: PREEL_COMPLEX(:)
 INTEGER(KIND=JPIM),INTENT(IN) :: KF_CURRENT, KF_TOTAL
 TYPE(BUFFERED_ALLOCATOR), INTENT(IN) :: ALLOCATOR
 TYPE(TRMTOL_UNPACK_HANDLE), INTENT(IN) :: HTRMTOL_UNPACK
+
+! An element of a non-CONTIGUOUS pointer array may not be sequence-associated with an
+! explicit-shape dummy (F2018 15.5.2.4); this alias addresses the same allocator slab.
+REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: ZPREEL_COMPLEX_C(:)
 
 INTEGER(KIND=JPIM) :: JM,JF,IGLG,OFFSET_VAR,KGL,ILOEN_MAX
 INTEGER(KIND=JPIB) :: IOFF_LAT, ISTA
@@ -291,47 +343,14 @@ CALL ASSIGN_PTR(PREEL_COMPLEX, GET_ALLOCATION(ALLOCATOR, HTRMTOL_UNPACK%HREEL),&
 
 OFFSET_VAR=D_NPTRLS(MYSETW)
 ILOEN_MAX=MAXVAL(G_NLOEN)
-#ifdef OMPGPU
-! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
-! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
-!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-!$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(FOUBUF,PREEL_COMPLEX) &
-!$OMP& PRIVATE(IGLG,IOFF_LAT,ISTA,RET_REAL,RET_COMPLEX) &
-!$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_CURRENT,ILOEN_MAX) FIRSTPRIVATE(OFFSET_VAR,KF_TOTAL)
-#endif
-#ifdef ACCGPU
-!$ACC PARALLEL LOOP PRIVATE(IGLG,IOFF_LAT,ISTA,RET_REAL,RET_COMPLEX) FIRSTPRIVATE(KF_CURRENT,&
-!$ACC&              KF_TOTAL,OFFSET_VAR,ILOEN_MAX) DEFAULT(NONE) TILE(32,16,1) &
-#ifndef _CRAYFTN
-!$ACC& ASYNC(1)
-#else
-!$ACC&
-#endif
-#endif
-DO KGL=1,D_NDGL_FS
-  DO JF=1,KF_CURRENT
-    DO JM=0,ILOEN_MAX/2
-      IGLG = OFFSET_VAR+KGL-1
+ZPREEL_COMPLEX_C => PREEL_COMPLEX
 
-      ! FFT transforms NLON real values to floor(NLON/2)+1 complex numbers. Hence we have
-      ! to fill those floor(NLON/2)+1 values.
-      ! Truncation happens starting at G_NMEN+1. Hence, we zero-fill those values.
-      IF (JM <= G_NLOEN(IGLG)/2) THEN
-        RET_REAL = 0.0_JPRBT
-        RET_COMPLEX = 0.0_JPRBT
-        IF (JM <= G_NMEN(IGLG)) THEN
-          ISTA  = 2_JPIB*D_NPNTGTB0(JM,KGL)*KF_CURRENT
-
-          RET_REAL    = FOUBUF(ISTA+2*JF-1)
-          RET_COMPLEX = FOUBUF(ISTA+2*JF  )
-        ENDIF
-        IOFF_LAT = 1_JPIB*KF_TOTAL*D_NSTAGTF(KGL)+(JF-1)*(D_NSTAGTF(KGL+1)-D_NSTAGTF(KGL))
-        PREEL_COMPLEX(IOFF_LAT+2*JM+1) = RET_REAL
-        PREEL_COMPLEX(IOFF_LAT+2*JM+2) = RET_COMPLEX
-      ENDIF
-    ENDDO
-  ENDDO
-ENDDO
+CALL TRMTOL_UNPACK_KERNEL(FOUBUF,SIZE(FOUBUF,KIND=JPIB), &
+  &                       ZPREEL_COMPLEX_C(1),SIZE(PREEL_COMPLEX,KIND=JPIB), &
+  &                       G_NLOEN,G_NMEN,SIZE(G_NLOEN), &
+  &                       D_NPNTGTB0,SIZE(D_NPNTGTB0,1)-1, &
+  &                       D_NSTAGTF,SIZE(D_NSTAGTF), &
+  &                       D_NDGL_FS,KF_CURRENT,KF_TOTAL,OFFSET_VAR,ILOEN_MAX)
 #ifdef OMPGPU
 !$OMP END TARGET DATA
 #endif
@@ -344,5 +363,74 @@ ENDDO
 END ASSOCIATE
 
 END SUBROUTINE TRMTOL_UNPACK
+
+! Unpack body with explicit-shape dummy arguments, for the same reason as TRMTOL_PACK_KERNEL:
+! a POINTER or assumed-shape actual costs a dope-vector copy on every launch.
+SUBROUTINE TRMTOL_UNPACK_KERNEL(PFOUBUF,KFOUBUF,PREEL_COMPLEX,KREEL, &
+  &                             KNLOEN,KNMEN,KNDGL, &
+  &                             KNPNTGTB0,KNSMAX, &
+  &                             KNSTAGTF,KNSTAGTF_N, &
+  &                             KNDGL_FS,KF_CURRENT,KF_TOTAL,KOFFSET_VAR,KLOEN_MAX)
+USE PARKIND_ECTRANS, ONLY: JPIM, JPRBT, JPIB
+
+IMPLICIT NONE
+
+INTEGER(KIND=JPIB), INTENT(IN)  :: KFOUBUF, KREEL
+INTEGER(KIND=JPIM), INTENT(IN)  :: KNDGL, KNSMAX, KNSTAGTF_N
+INTEGER(KIND=JPIM), INTENT(IN)  :: KNDGL_FS, KF_CURRENT, KF_TOTAL, KOFFSET_VAR, KLOEN_MAX
+REAL(KIND=JPRBT),   INTENT(IN)  :: PFOUBUF(KFOUBUF)
+REAL(KIND=JPRBT),   INTENT(OUT) :: PREEL_COMPLEX(KREEL)
+INTEGER(KIND=JPIM), INTENT(IN)  :: KNLOEN(KNDGL), KNMEN(KNDGL)
+INTEGER(KIND=JPIM), INTENT(IN)  :: KNPNTGTB0(0:KNSMAX,KNDGL_FS)
+INTEGER(KIND=JPIB), INTENT(IN)  :: KNSTAGTF(KNSTAGTF_N)
+
+INTEGER(KIND=JPIM) :: JM, JF, IGLG, KGL
+INTEGER(KIND=JPIB) :: IOFF_LAT, ISTA
+REAL(KIND=JPRBT) :: RET_REAL, RET_COMPLEX
+
+#ifdef OMPGPU
+! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
+! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
+!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
+!$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PFOUBUF,PREEL_COMPLEX) &
+!$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KNLOEN,KNMEN,KNPNTGTB0,KNSTAGTF) &
+!$OMP& PRIVATE(IGLG,IOFF_LAT,ISTA,RET_REAL,RET_COMPLEX) &
+!$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_CURRENT,KLOEN_MAX) FIRSTPRIVATE(KOFFSET_VAR,KF_TOTAL)
+#endif
+#ifdef ACCGPU
+!$ACC PARALLEL LOOP PRIVATE(IGLG,IOFF_LAT,ISTA,RET_REAL,RET_COMPLEX) FIRSTPRIVATE(KF_CURRENT,&
+!$ACC&              KF_TOTAL,KOFFSET_VAR,KLOEN_MAX) DEFAULT(NONE) TILE(32,16,1) &
+!$ACC&              PRESENT(KNLOEN,KNMEN,KNPNTGTB0,KNSTAGTF) &
+#ifndef _CRAYFTN
+!$ACC& ASYNC(1)
+#else
+!$ACC&
+#endif
+#endif
+DO KGL=1,KNDGL_FS
+  DO JF=1,KF_CURRENT
+    DO JM=0,KLOEN_MAX/2
+      IGLG = KOFFSET_VAR+KGL-1
+
+      ! FFT transforms NLON real values to floor(NLON/2)+1 complex numbers. Hence we have
+      ! to fill those floor(NLON/2)+1 values.
+      ! Truncation happens starting at KNMEN+1. Hence, we zero-fill those values.
+      IF (JM <= KNLOEN(IGLG)/2) THEN
+        RET_REAL = 0.0_JPRBT
+        RET_COMPLEX = 0.0_JPRBT
+        IF (JM <= KNMEN(IGLG)) THEN
+          ISTA  = 2_JPIB*KNPNTGTB0(JM,KGL)*KF_CURRENT
+
+          RET_REAL    = PFOUBUF(ISTA+2*JF-1)
+          RET_COMPLEX = PFOUBUF(ISTA+2*JF  )
+        ENDIF
+        IOFF_LAT = 1_JPIB*KF_TOTAL*KNSTAGTF(KGL)+(JF-1)*(KNSTAGTF(KGL+1)-KNSTAGTF(KGL))
+        PREEL_COMPLEX(IOFF_LAT+2*JM+1) = RET_REAL
+        PREEL_COMPLEX(IOFF_LAT+2*JM+2) = RET_COMPLEX
+      ENDIF
+    ENDDO
+  ENDDO
+ENDDO
+END SUBROUTINE TRMTOL_UNPACK_KERNEL
 END MODULE TRMTOL_PACK_UNPACK
 

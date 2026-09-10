@@ -67,12 +67,15 @@ MODULE UPDSPB_MOD
   
   INTEGER(KIND=JPIM),INTENT(IN)  :: KFIELD
   REAL(KIND=JPRBT)  ,INTENT(IN)  :: POA(:,:,:)
-  REAL(KIND=JPRB)   ,INTENT(OUT) :: PSPEC(:,:)
+  ! CONTIGUOUS so that handing PSPEC to the explicit-shape dummy of UPDSPB_UPDATE passes a base
+  ! address. Without it the compiler must allow for a non-contiguous actual and would pack into a
+  ! temporary, which would not be the storage the caller mapped MAP(FROM).
+  REAL(KIND=JPRB)   ,INTENT(OUT) ,CONTIGUOUS :: PSPEC(:,:)
   INTEGER(KIND=JPIM),INTENT(IN),OPTIONAL :: KFLDPTR(:)
   
   !     LOCAL INTEGER SCALARS
-  INTEGER(KIND=JPIM)  :: KM,KMLOC
-  INTEGER(KIND=JPIM) :: INM, IR, JFLD, JN, IASM0
+  ! Extents for the explicit-shape dummies of UPDSPB_UPDATE.
+  INTEGER(KIND=JPIM) :: ISPEC1, ISPEC2, INASM0_UB
   
   
   !     ------------------------------------------------------------------
@@ -111,40 +114,12 @@ MODULE UPDSPB_MOD
   !$ACC DATA PRESENT(PSPEC,POA,R,R_NTMAX,D,D_NUMP,D_MYMS,D_NASM0) ASYNC(1)
 #endif
 
-! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
-! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM) &
-  !$OMP& SHARED(POA,PSPEC) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD)
-#endif
-#ifdef ACCGPU
-  !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM) DEFAULT(NONE) COPYIN(KFIELD) &
-#ifndef _CRAYFTN
-  !$ACC& ASYNC(1)
-#else
-  !$ACC&
-#endif
-#endif
-  DO KMLOC=1,D_NUMP
-    DO JN=3,R_NTMAX+3
-      DO JFLD=1,KFIELD
-        KM = D_MYMS(KMLOC)
-        IASM0 = D_NASM0(KM)
+  ISPEC1 = SIZE(PSPEC,1)
+  ISPEC2 = SIZE(PSPEC,2)
+  INASM0_UB = UBOUND(D_NASM0,1)
 
-        IF(KM /= 0 .AND. JN <= R_NTMAX+3-KM) THEN
-        !(DO JN=3,R_NTMAX+3-KM)
-          INM = IASM0+((R_NTMAX+3-JN)-KM)*2
-          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
-          PSPEC(JFLD,INM+1) = POA(2*JFLD  ,JN,KMLOC)
-        ELSEIF (KM == 0) THEN
-          !(DO JN=3,R_NTMAX+3)
-          INM = IASM0+(R_NTMAX+3-JN)*2
-          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
-          PSPEC(JFLD,INM+1) = 0.0_JPRBT
-        END IF
-      ENDDO
-    ENDDO
-  ENDDO
+  CALL UPDSPB_UPDATE(POA,PSPEC,ISPEC1,ISPEC2,D_MYMS,D_NUMP,D_NASM0,INASM0_UB, &
+    &                KFIELD,R_NTMAX)
 
 #ifdef ACCGPU
   !$ACC END DATA
@@ -157,4 +132,72 @@ MODULE UPDSPB_MOD
   !     ------------------------------------------------------------------
  
   END SUBROUTINE UPDSPB
+
+  ! Loop body with explicit-shape dummy arguments. A POINTER, assumed-shape or derived-type
+  ! component actual is described by a dope vector, and the compiler puts that dope vector in the
+  ! device data environment on every launch: create map entry, copy 48-120 bytes, tear the entry
+  ! down. HAS_DEVICE_ADDR does not suppress it. Explicit-shape dummies are described by their
+  ! extents, which travel as FIRSTPRIVATE scalars, so nothing has to be copied.
+  !
+  ! POA is the exception. Every actual is a leading-dimension section of the LTDIR work arrays
+  ! (POA2(IFIRST+1:IFIRST+2*KF_UV,:,:) and POA1(IST:IEND,:,:)), which is not contiguous, and an
+  ! element of a non-contiguous array may not be sequence-associated with an explicit-shape dummy
+  ! (F2018 15.5.2.4). It stays assumed-shape and keeps its descriptor.
+  SUBROUTINE UPDSPB_UPDATE(POA,PSPEC,KSPEC1,KSPEC2,KMYMS,KNUMP,KNASM0,KNASM0_UB, &
+    &                      KFIELD,KNTMAX)
+  USE PARKIND_ECTRANS, ONLY: JPIM, JPRB, JPRBT
+
+  IMPLICIT NONE
+
+  INTEGER(KIND=JPIM),INTENT(IN)  :: KSPEC1, KSPEC2, KNUMP, KNASM0_UB
+  INTEGER(KIND=JPIM),INTENT(IN)  :: KFIELD, KNTMAX
+  REAL(KIND=JPRBT)  ,INTENT(IN)  :: POA(:,:,:)
+  REAL(KIND=JPRB)   ,INTENT(OUT) :: PSPEC(KSPEC1,KSPEC2)
+  INTEGER(KIND=JPIM),INTENT(IN)  :: KMYMS(KNUMP)
+  ! D%NASM0 is allocated (0:R%NSMAX), and KM is 0 for the zonal mean, so the lower bound has to
+  ! be carried over explicitly.
+  INTEGER(KIND=JPIM),INTENT(IN)  :: KNASM0(0:KNASM0_UB)
+
+  INTEGER(KIND=JPIM) :: KM, KMLOC
+  INTEGER(KIND=JPIM) :: INM, JFLD, JN, IASM0
+
+! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
+! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
+#ifdef OMPGPU
+  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM) &
+  !$OMP& SHARED(POA,PSPEC,KMYMS,KNASM0) &
+  !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KNASM0) &
+  !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD,KNUMP,KNTMAX)
+#endif
+#ifdef ACCGPU
+  !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM) DEFAULT(NONE) COPYIN(KFIELD) &
+  !$ACC& PRESENT(POA,PSPEC,KMYMS,KNASM0) &
+  !$ACC& FIRSTPRIVATE(KNUMP,KNTMAX) &
+#ifndef _CRAYFTN
+  !$ACC& ASYNC(1)
+#else
+  !$ACC&
+#endif
+#endif
+  DO KMLOC=1,KNUMP
+    DO JN=3,KNTMAX+3
+      DO JFLD=1,KFIELD
+        KM = KMYMS(KMLOC)
+        IASM0 = KNASM0(KM)
+
+        IF(KM /= 0 .AND. JN <= KNTMAX+3-KM) THEN
+        !(DO JN=3,KNTMAX+3-KM)
+          INM = IASM0+((KNTMAX+3-JN)-KM)*2
+          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
+          PSPEC(JFLD,INM+1) = POA(2*JFLD  ,JN,KMLOC)
+        ELSEIF (KM == 0) THEN
+          !(DO JN=3,KNTMAX+3)
+          INM = IASM0+(KNTMAX+3-JN)*2
+          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
+          PSPEC(JFLD,INM+1) = 0.0_JPRBT
+        END IF
+      ENDDO
+    ENDDO
+  ENDDO
+  END SUBROUTINE UPDSPB_UPDATE
 END MODULE UPDSPB_MOD
