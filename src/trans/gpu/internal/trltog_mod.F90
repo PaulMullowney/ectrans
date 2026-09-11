@@ -543,7 +543,10 @@ CONTAINS
     ! EXT_ACC_CREATE (target enter data map over the raw byte range), which maps the storage
     ! without ever entering their descriptors in the present table, so MAP(PRESENT) on them
     ! cannot succeed. PREEL_REAL is a growing-allocator buffer. Those referenced by the
-    ! pack/unpack compute constructs are supplied to them via HAS_DEVICE_ADDR instead.
+    ! pack/unpack compute constructs are supplied to them via ECTRANS_GP_DEVICE_ADDR_CLAUSE
+    ! instead, which also carries the ones the caller left absent. See the CMakeLists comment
+    ! on that macro: being OPTIONAL is why they need a clause of their own rather than the
+    ! one the allocator buffers use.
 #endif
 #ifdef ACCGPU
     !$ACC DATA IF(PRESENT(PGP))   PRESENT(PGP) ASYNC(1)
@@ -1087,7 +1090,7 @@ CONTAINS
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD_COUNT,KWSET_SIZE) &
     !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KCOMBUFR_OFFSET,KNR) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZCOMBUFR) &
-    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:PGPUV,PGP2,PGP3A,PGP3B)
+    !$OMP& ECTRANS_GP_DEVICE_ADDR_CLAUSE
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(PRESENT) PRIVATE(JK,JBLK,IFLD,JI) &
@@ -1158,7 +1161,7 @@ CONTAINS
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KWSET_SIZE) &
     !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KGP_V) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_REAL) &
-    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:PGPUV,PGP2,PGP3A,PGP3B)
+    !$OMP& ECTRANS_GP_DEVICE_ADDR_CLAUSE
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(PRESENT) PRIVATE(JK,JBLK,IFLD,IPOS) &

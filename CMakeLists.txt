@@ -204,6 +204,38 @@ else()
   set( ECTRANS_DEVICE_ADDR_CLAUSE "HAS_DEVICE_ADDR" )
 endif()
 
+# ECTRANS_GP_DEVICE_ADDR_CLAUSE is ECTRANS_DEVICE_ADDR_CLAUSE for the subset of those arrays
+# that are OPTIONAL dummy arguments: the PGP* gridpoint arrays of TRGTOL and TRLTOG. The
+# benchmark and most IFS configurations leave at least PGP3B absent, and the two compilers
+# need different clauses, not just different spellings of one, so this cannot be folded into
+# the macro above.
+#
+# HAS_DEVICE_ADDR carries an absent optional harmlessly. nvfortran does not have it, and
+# there the fallback cannot be SHARED as it is above: naming an explicit-shape dummy in
+# SHARED leaves it to the construct's implicit mapping, which on a B200 faults rather than
+# resolving the device-resident storage. MAP(ALLOC:...) is what works there.
+#
+# What MAP must not gain is the PRESENT modifier that ECTRANS_MAP_PRESENT_ALLOC adds
+# everywhere else, because an absent optional reaches the runtime as a null base address
+# that no present-table entry can match. amdflang aborts the first launch outright:
+# "device mapping required by 'present' map type modifier does not exist for host address
+# 0x0000000000000000 (0 bytes)". So the assertion is dropped on this one clause, and only
+# here. ALLOC still resolves the arrays that were passed to their existing device mapping.
+#
+# Unlike the other macros here this one carries its list rather than taking it at the call
+# site, so the constructs name it bare. That is not a preference: the nvfortran expansion
+# needs the list inside MAP(...) after a map-type, which an object-like macro cannot build
+# around an argument list, and a function-like macro cannot be used because CMake refuses to
+# put function-style definitions on a compiler command line at all ("Function-style
+# preprocessor definitions may not be passed ... CMake is dropping a preprocessor
+# definition") on the grounds that many compilers do not support them. The list is the same
+# at all four call sites, and each keeps naming the same arrays in the ACC clause alongside.
+if( CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC" )
+  set( ECTRANS_GP_DEVICE_ADDR_CLAUSE "MAP(ALLOC:PGPUV,PGP2,PGP3A,PGP3B)" )
+else()
+  set( ECTRANS_GP_DEVICE_ADDR_CLAUSE "HAS_DEVICE_ADDR(PGPUV,PGP2,PGP3A,PGP3B)" )
+endif()
+
 # ECTRANS_LOOP_BOUNDS_CLAUSE is the data-sharing clause the compute constructs use for the
 # scalars that bound their loops, which they have to name for DEFAULT(NONE) to be satisfied.
 # It is a separate clause from the rest because which one is used decides the launch geometry on
