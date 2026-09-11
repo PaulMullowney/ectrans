@@ -178,16 +178,29 @@ CONTAINS
     REAL(KIND=JPRB)   ,OPTIONAL,INTENT(IN)  :: PSPDIV(:,:)
     REAL(KIND=JPRB)   ,OPTIONAL,INTENT(IN)  :: PSPSCALAR(:,:)
     REAL(KIND=JPRB)   ,OPTIONAL,INTENT(IN)  :: PSPSC2(:,:)
-    REAL(KIND=JPRB)   ,OPTIONAL,INTENT(IN)  :: PSPSC3A(:,:,:)
-    REAL(KIND=JPRB)   ,OPTIONAL,INTENT(IN)  :: PSPSC3B(:,:,:)
+    ! CONTIGUOUS so that the PSPSC3A(:,:,J3) sections handed to PRFI1B are simply contiguous, and
+    ! so satisfy its CONTIGUOUS dummy without a packing temporary that would not be the storage
+    ! mapped MAP(TO) above.
+    REAL(KIND=JPRB)   ,OPTIONAL,INTENT(IN)  ,CONTIGUOUS :: PSPSC3A(:,:,:)
+    REAL(KIND=JPRB)   ,OPTIONAL,INTENT(IN)  ,CONTIGUOUS :: PSPSC3B(:,:,:)
     REAL(KIND=JPRBT), POINTER, INTENT(OUT) :: ZOUTS(:), ZOUTA(:)
     REAL(KIND=JPRD), POINTER, INTENT(OUT) :: ZOUTS0(:), ZOUTA0(:)
 
     INTEGER(KIND=JPIM) :: IFIRST, J3
 
-    REAL(KIND=JPRB), POINTER :: PIA_L(:), PIA(:,:,:)
-    REAL(KIND=JPRB), POINTER :: PU(:,:,:), PV(:,:,:), PVOR(:,:,:), PDIV(:,:,:)
-    REAL(KIND=JPRB), POINTER :: PSCALARS(:,:,:), PSCALARS_NSDER(:,:,:)
+    ! Leading dimension of PIA, and the offset of each field slice within it. VDTUV and
+    ! SPNSDE take the slices as explicit-shape dummies, which carry no descriptor and so
+    ! need the parent leading dimension alongside each slice's base element.
+    INTEGER(KIND=JPIM) :: IPIA_LD
+    INTEGER(KIND=JPIM) :: IVOROFF, IDIVOFF, IUOFF, IVOFF, ISCAOFF, INSDOFF
+
+    REAL(KIND=JPRB), POINTER :: PIA_L(:)
+    ! CONTIGUOUS so that the base element of a field slice may be sequence-associated with
+    ! the explicit-shape dummies of VDTUV and SPNSDE (F2018 15.5.2.4). PIA is a whole-array
+    ! view of one allocator slab, so it is contiguous.
+    REAL(KIND=JPRB), POINTER, CONTIGUOUS :: PIA(:,:,:)
+    REAL(KIND=JPRB), POINTER :: PVOR(:,:,:), PDIV(:,:,:)
+    REAL(KIND=JPRB), POINTER :: PSCALARS(:,:,:)
 
     REAL(KIND=JPHOOK) :: ZHOOK_HANDLE
     TYPE(BUFFERED_ALLOCATOR), INTENT(IN) :: ALLOCATOR
@@ -241,6 +254,7 @@ CONTAINS
     CALL ASSIGN_PTR(PIA_L, GET_ALLOCATION(ALLOCATOR, HLTINV%HPIA_AND_IN),&
         & IALLOC_POS, IALLOC_SZ)
     CALL C_F_POINTER(C_LOC(PIA_L), PIA, (/ 2*IF_READIN, R%NTMAX+3, D%NUMP /))
+    IPIA_LD = 2*IF_READIN
     IALLOC_POS = IALLOC_POS + IALLOC_SZ
 
     ! ZINP
@@ -285,28 +299,33 @@ CONTAINS
     IFIRST = 0
     IF (.NOT. LVORGP .OR. LDIVGP) THEN
       ! Usually we want to store vorticity first
+      IVOROFF = IFIRST
       PVOR => PIA(IFIRST+1:IFIRST+2*KF_UV,:,:)
       IFIRST = IFIRST + 2*KF_UV ! Vorticity
 
+      IDIVOFF = IFIRST
       PDIV => PIA(IFIRST+1:IFIRST+2*KF_UV,:,:)
       IFIRST = IFIRST + 2*KF_UV ! Divergence
     ELSE
       ! Except if we want to translate Vorticity but not Divergence, we should have Divergence first
       ! Then we have all buffers that move on in a contiguous buffer
+      IDIVOFF = IFIRST
       PDIV => PIA(IFIRST+1:IFIRST+2*KF_UV,:,:)
       IFIRST = IFIRST + 2*KF_UV ! Divergence
 
+      IVOROFF = IFIRST
       PVOR => PIA(IFIRST+1:IFIRST+2*KF_UV,:,:)
       IFIRST = IFIRST + 2*KF_UV ! Vorticity
     ENDIF
-    PU => PIA(IFIRST+1:IFIRST+2*KF_UV,:,:)
+    IUOFF = IFIRST
     IFIRST = IFIRST + 2*KF_UV ! U
-    PV => PIA(IFIRST+1:IFIRST+2*KF_UV,:,:)
+    IVOFF = IFIRST
     IFIRST = IFIRST + 2*KF_UV ! V
+    ISCAOFF = IFIRST
     PSCALARS => PIA(IFIRST+1:IFIRST+2*KF_SCALARS,:,:)
     IFIRST = IFIRST + 2*KF_SCALARS ! Scalars
+    INSDOFF = IFIRST
     IF (LSCDERS) THEN
-      PSCALARS_NSDER => PIA(IFIRST+1:IFIRST+2*KF_SCALARS,:,:)
       IFIRST = IFIRST + 2*KF_SCALARS ! Scalars NS Derivatives
     ENDIF
 
@@ -348,7 +367,8 @@ CONTAINS
       CALL PRFI1B(PDIV,PSPDIV,KF_UV,UBOUND(PSPDIV,2))
 
       ! Compute U and V for VOR and DIV
-      CALL VDTUV(KF_UV,ZEPSNM,PVOR,PDIV,PU,PV)
+      CALL VDTUV(KF_UV,IPIA_LD,ZEPSNM,PIA(IVOROFF+1,1,1),PIA(IDIVOFF+1,1,1), &
+        &        PIA(IUOFF+1,1,1),PIA(IVOFF+1,1,1))
     ENDIF
 
     IF (KF_SCALARS > 0) THEN
@@ -381,7 +401,7 @@ CONTAINS
 
     ! Compute NS derivatives if needed
     IF (LSCDERS) THEN
-      CALL SPNSDE(KF_SCALARS,ZEPSNM,PSCALARS,PSCALARS_NSDER)
+      CALL SPNSDE(KF_SCALARS,IPIA_LD,ZEPSNM,PIA(ISCAOFF+1,1,1),PIA(INSDOFF+1,1,1))
     ENDIF
 
 #ifdef OMPGPU

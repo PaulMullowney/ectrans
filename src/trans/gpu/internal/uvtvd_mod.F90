@@ -11,7 +11,7 @@
 
 MODULE UVTVD_MOD
 CONTAINS
-SUBROUTINE UVTVD(KF_UV,PU,PV,PVOR,PDIV)
+SUBROUTINE UVTVD(KF_UV,KLDUV,KLDVD,PU,PV,PVOR,PDIV)
 
 !**** *UVTVD* - Compute vor/div from u and v in spectral space
 
@@ -27,6 +27,10 @@ SUBROUTINE UVTVD(KF_UV,PU,PV,PVOR,PDIV)
 
 !        Explicit arguments :  KM - zonal wave-number
 !        --------------------  KF_UV - number of fields (levels)
+!                              KLDUV - leading dimension of the buffer PU and PV
+!                                      are slices of
+!                              KLDVD - leading dimension of the buffer PVOR and PDIV
+!                                      are slices of
 !                              PEPSNM - REPSNM for wavenumber KM
 !                              PU - u wind component for zonal
 !                                   wavenumber KM
@@ -68,8 +72,13 @@ IMPLICIT NONE
 
 !     DUMMY INTEGER SCALARS
 INTEGER(KIND=JPIM), INTENT(IN)  :: KF_UV
-REAL(KIND=JPRBT), INTENT(OUT)    :: PVOR(:,:,:),PDIV(:,:,:)
-REAL(KIND=JPRBT), INTENT(INOUT)  :: PU  (:,:,:),PV  (:,:,:)
+! The four fields are explicit shape so that no array descriptor has to be mapped to the
+! device on every launch of the compute constructs below. They are slices of two different
+! spectral buffers, so their first extents are those buffers' leading dimensions and the
+! caller passes the base element of each slice; only 1:2*KF_UV of each is addressed here.
+INTEGER(KIND=JPIM), INTENT(IN)  :: KLDUV, KLDVD
+REAL(KIND=JPRBT), INTENT(OUT)    :: PVOR(KLDVD,R%NTMAX+3,D%NUMP),PDIV(KLDVD,R%NTMAX+3,D%NUMP)
+REAL(KIND=JPRBT), INTENT(INOUT)  :: PU  (KLDUV,R%NTMAX+3,D%NUMP),PV  (KLDUV,R%NTMAX+3,D%NUMP)
 INTEGER(KIND=JPIM)  :: KM, KMLOC
 
 !     LOCAL INTEGER SCALARS
@@ -85,10 +94,9 @@ ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS, ZEPSNM=>FG%ZEPSNM)
 !              ------------------------------------------
 
 #ifdef OMPGPU
-! PU/PV/PVOR/PDIV are growing-allocator-backed pointers. Their storage is registered with
+! PU/PV/PVOR/PDIV are backed by the growing allocator. Their storage is registered with
 ! omp_target_associate_ptr, so ordinary mapping resolves it inside the nested compute
-! constructs, but their dummy descriptors are never entered in the present table and so
-! cannot be MAP(PRESENT)'d.
+! constructs, but it is never entered in the present table and so cannot be MAP(PRESENT)'d.
 ! D, R and FG are reached only through their ASSOCIATE aliases. Naming the parent types here
 ! makes the runtime walk every allocatable component of those derived types and re-copy each
 ! component descriptor on entry, so only the aliases are mapped.

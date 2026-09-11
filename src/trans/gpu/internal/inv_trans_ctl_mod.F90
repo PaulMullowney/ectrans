@@ -135,10 +135,14 @@ CONTAINS
 
     ! Local variables
 
-    REAL(KIND=JPRB), POINTER :: FOUBUF(:), FOUBUF_IN(:)
-    REAL(KIND=JPRBT), POINTER :: PREEL_REAL(:), PREEL_COMPLEX(:)
-    REAL(KIND=JPRBT), POINTER :: ZOUTS(:), ZOUTA(:)
-    REAL(KIND=JPRD), POINTER :: ZOUTS0(:), ZOUTA0(:)
+    ! CONTIGUOUS because these address growing-allocator slabs, which are contiguous. The
+    ! attribute has to be here as well as on the CONTIGUOUS dummies these are passed to:
+    ! without it the compiler cannot prove the actual is contiguous and copies it into a
+    ! temporary at the call, which under OMPGPU means a host read of a device pointer.
+    REAL(KIND=JPRB), POINTER, CONTIGUOUS :: FOUBUF(:), FOUBUF_IN(:)
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: PREEL_REAL(:), PREEL_COMPLEX(:)
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: ZOUTS(:), ZOUTA(:)
+    REAL(KIND=JPRD), POINTER, CONTIGUOUS :: ZOUTS0(:), ZOUTA0(:)
     INTEGER(KIND=JPIM) :: KUV_OFFSET, KSCALARS_OFFSET, KSCALARS_NSDER_OFFSET, &
         & KUV_EWDER_OFFSET, KSCALARS_EWDER_OFFSET
     INTEGER(KIND=JPIM) :: IF_LEG, IF_FOURIER

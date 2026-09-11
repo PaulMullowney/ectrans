@@ -11,7 +11,7 @@
 
 MODULE SPNSDE_MOD
 CONTAINS
-SUBROUTINE SPNSDE(KF_SCALARS,PEPSNM,PF,PNSD)
+SUBROUTINE SPNSDE(KF_SCALARS,KLD,PEPSNM,PF,PNSD)
 
 USE PARKIND_ECTRANS, ONLY: JPIM, JPRB, JPRBT
 USE TPM_DIM,         ONLY: R
@@ -30,6 +30,7 @@ USE TPM_DISTR,       ONLY: D
 !        Explicit arguments :
 !        --------------------
 !        KM -zonal wavenumber (input-c)
+!        KLD - leading dimension of the spectral buffer PF and PNSD are slices of (input-c)
 !        PEPSNM - REPSNM for wavenumber KM (input-c)
 !        PF  (NLEI1,2*KF_SCALARS) - input field (input)
 !        PNSD(NLEI1,2*KF_SCALARS) - N-S derivative (output)
@@ -73,9 +74,14 @@ IMPLICIT NONE
 
 INTEGER(KIND=JPIM)  :: KM, KMLOC
 INTEGER(KIND=JPIM), INTENT(IN)  :: KF_SCALARS
+! PF and PNSD are explicit shape so that no array descriptor has to be mapped to the device
+! on every launch of the compute construct below. They are slices of a larger spectral
+! buffer, so their first extent is that buffer's leading dimension KLD and the caller passes
+! the base element of each slice; only 1:2*KF_SCALARS of it is addressed here.
+INTEGER(KIND=JPIM), INTENT(IN)  :: KLD
 REAL(KIND=JPRBT),    INTENT(IN)  :: PEPSNM(1:D%NUMP,0:R%NTMAX+2)
-REAL(KIND=JPRB),    INTENT(IN)  :: PF(:,:,:)
-REAL(KIND=JPRB),    INTENT(OUT) :: PNSD(:,:,:)
+REAL(KIND=JPRB),    INTENT(IN)  :: PF(KLD,R%NTMAX+3,D%NUMP)
+REAL(KIND=JPRB),    INTENT(OUT) :: PNSD(KLD,R%NTMAX+3,D%NUMP)
 
 !     LOCAL INTEGER SCALARS
 INTEGER(KIND=JPIM) :: J, JN, JI, IR, II
@@ -83,9 +89,9 @@ INTEGER(KIND=JPIM) :: J, JN, JI, IR, II
 ASSOCIATE(D_NUMP=>D%NUMP, R_NTMAX=>R%NTMAX, D_MYMS=>D%MYMS)
 
 #ifdef OMPGPU
-! PF/PNSD are growing-allocator-backed pointers. Their storage is registered with
-! omp_target_associate_ptr, so ordinary mapping resolves it, but their dummy descriptors
-! are never entered in the present table and so cannot be MAP(PRESENT)'d.
+! PF/PNSD are backed by the growing allocator. Their storage is registered with
+! omp_target_associate_ptr, so ordinary mapping resolves it, but it is never entered in the
+! present table and so cannot be MAP(PRESENT)'d.
 ! R and D are reached only through their ASSOCIATE aliases. Naming the parent types here makes
 ! the runtime walk every allocatable component of TYPE_DIM and TYPE_DISTR and re-copy each
 ! component descriptor on entry, so only the aliases are mapped.

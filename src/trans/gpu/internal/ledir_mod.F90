@@ -140,12 +140,17 @@ CONTAINS
     !     LOCAL VARIABLES
     INTEGER(KIND=JPIM)  :: KM
     INTEGER(KIND=JPIM)  :: KMLOC
-    INTEGER(KIND=JPIM) :: IA, IS, J, IMLOC0(1)
+    INTEGER(KIND=JPIM) :: IMLOC0(1)
     INTEGER(KIND=JPIM)  :: KS(D%NUMP), NS(D%NUMP)
     INTEGER(KIND=JPIB)  :: AOFFSETS(D%NUMP), BOFFSETS(D%NUMP), COFFSETS(D%NUMP)
     REAL(KIND=JPHOOK) :: ZHOOK_HANDLE
 
-    INTEGER(KIND=JPIM) :: JF
+    ! An element of a non-CONTIGUOUS pointer array may not be sequence-associated with an
+    ! explicit-shape dummy (F2018 15.5.2.4), so the store bodies at the end of this module
+    ! are handed these aliases instead. They address the same allocator slab, which is
+    ! contiguous.
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: ZOUT_C(:)
+    REAL(KIND=JPRD),  POINTER, CONTIGUOUS :: ZOUT0_C(:)
 
     INTEGER(KIND=JPIM)  :: IOUT_STRIDES0
     INTEGER(KIND=JPIB)  :: IOUT_STRIDES1
@@ -171,6 +176,9 @@ CONTAINS
 
     CALL LEDIR_STRIDES(KF_FS,IOUT_STRIDES0,IOUT_STRIDES1,IIN_STRIDES0,IIN_STRIDES1,&
                        IOUT0_STRIDES0,IOUT0_STRIDES1,IIN0_STRIDES0,IIN0_STRIDES1)
+
+    ZOUT_C => ZOUT
+    ZOUT0_C => ZOUT0
 
 #ifdef OMPGPU
     ! ZINPS/ZINPA/ZINPS0/ZINPA0/ZOUT/ZOUT0/POA1 are growing-allocator buffers. Their storage
@@ -275,40 +283,9 @@ CONTAINS
     ENDIF
     CALL GSTATS(414,1)
 
-#ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IA) ECTRANS_OMP_DEFAULT_CLAUSE &
-    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUT,ZOUT0,POA1) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS) FIRSTPRIVATE(IOUT_STRIDES0,IOUT0_STRIDES0)
-#endif
-#ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) FIRSTPRIVATE(KF_FS,IOUT_STRIDES0,IOUT0_STRIDES0) DEFAULT(NONE) &
-#ifndef _CRAYFTN
-    !$ACC& ASYNC(1)
-#else
-    !$ACC&
-#endif
-#endif
-    DO KMLOC=1,D_NUMP
-      DO JF=1,2*KF_FS
-        KM = D_MYMS(KMLOC)
-        IA  = 1+MOD(R_NTMAX-KM+2,2)
-        IF (KM /= 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX-KM+2)/2
-            POA1(JF,IA+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*IOUT_STRIDES0+D_OFFSETS_GEMM2(KMLOC)*IOUT_STRIDES0)
-          ENDDO
-        ELSEIF (MOD(JF-1,2) == 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX+2)/2
-            POA1(JF,IA+1+(J-1)*2,KMLOC) = ZOUT0((JF-1)/2+1+(J-1)*IOUT0_STRIDES0)
-          ENDDO
-        ENDIF
-      ENDDO
-    ENDDO
+    CALL LEDIR_STORE_ANTISYM(POA1,ZOUT_C(1),SIZE(ZOUT,KIND=JPIB),ZOUT0_C(1),SIZE(ZOUT0), &
+      &                      D_MYMS,D_OFFSETS_GEMM2,D_NUMP, &
+      &                      KF_FS,R_NSMAX,R_NTMAX,IOUT_STRIDES0,IOUT0_STRIDES0)
 
     ! symmetric
 
@@ -394,41 +371,9 @@ CONTAINS
     ENDIF
     CALL GSTATS(414,1)
 
-#ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IS) &
-    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUT,ZOUT0,POA1) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS) FIRSTPRIVATE(IOUT_STRIDES0)
-#endif
-#ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS) FIRSTPRIVATE(KF_FS,IOUT_STRIDES0,IOUT0_STRIDES0) &
-    !$ACC& DEFAULT(NONE) &
-#ifndef _CRAYFTN
-    !$ACC& ASYNC(1)
-#else
-    !$ACC&
-#endif
-#endif
-    DO KMLOC=1,D_NUMP
-      DO JF=1,2*KF_FS
-        KM = D_MYMS(KMLOC)
-        IS  = 1+MOD(R_NTMAX-KM+1,2)
-        IF (KM /= 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX-KM+3)/2
-            POA1(JF,IS+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*IOUT_STRIDES0+D_OFFSETS_GEMM2(KMLOC)*IOUT_STRIDES0)
-          ENDDO
-        ELSEIF (MOD(JF-1,2) == 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX+3)/2
-            POA1(JF,IS+1+(J-1)*2,KMLOC) = ZOUT0((JF-1)/2+1+(J-1)*IOUT0_STRIDES0)
-          ENDDO
-        ENDIF
-      ENDDO
-    ENDDO
+    CALL LEDIR_STORE_SYM(POA1,ZOUT_C(1),SIZE(ZOUT,KIND=JPIB),ZOUT0_C(1),SIZE(ZOUT0), &
+      &                  D_MYMS,D_OFFSETS_GEMM2,D_NUMP, &
+      &                  KF_FS,R_NSMAX,R_NTMAX,IOUT_STRIDES0,IOUT0_STRIDES0)
 #ifdef OMPGPU
     !$OMP END TARGET DATA
 #endif
@@ -442,4 +387,128 @@ CONTAINS
     !     ------------------------------------------------------------------
     END ASSOCIATE
   END SUBROUTINE LEDIR
+
+  ! Bodies that move the GEMM output into POA1, with explicit-shape dummy arguments. A
+  ! POINTER or assumed-shape actual is described by a dope vector, and the compiler puts that
+  ! dope vector in the device data environment on every launch: create map entry, copy 48-120
+  ! bytes, tear the entry down. HAS_DEVICE_ADDR does not suppress it. Explicit-shape dummies
+  ! are described by their extents, which travel as FIRSTPRIVATE scalars, so nothing has to be
+  ! copied.
+  ! POA1 is the exception and keeps its descriptor: LEDIR is also called from LTINVAD with a
+  ! rank-3 section of the field dimension (PIA_LEDIR), whose columns are strided by the parent
+  ! leading dimension. An explicit-shape dummy would need that leading dimension, which is not
+  ! recoverable from the section, so it would have to come from LEDIR's callers.
+  SUBROUTINE LEDIR_STORE_ANTISYM(POA1,ZOUT,KOUT,ZOUT0,KOUT0, &
+    &                            KMYMS,KOFFSETS_GEMM2,KNUMP, &
+    &                            KF_FS,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0)
+    IMPLICIT NONE
+
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KOUT
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KOUT0, KNUMP
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KF_FS, KNSMAX, KNTMAX
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KOUT_STRIDES0, KOUT0_STRIDES0
+    REAL(KIND=JPRBT),   INTENT(INOUT) :: POA1(:,:,:)
+    REAL(KIND=JPRBT),   INTENT(IN)    :: ZOUT(KOUT)
+    REAL(KIND=JPRD),    INTENT(IN)    :: ZOUT0(KOUT0)
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
+
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IA, JF, J
+
+#ifdef OMPGPU
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IA) ECTRANS_OMP_DEFAULT_CLAUSE &
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUT,ZOUT0,POA1) &
+    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KNUMP) &
+    !$OMP& FIRSTPRIVATE(KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0)
+#endif
+#ifdef ACCGPU
+    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) DEFAULT(NONE) &
+    !$ACC& PRESENT(POA1,ZOUT,ZOUT0,KMYMS,KOFFSETS_GEMM2) &
+    !$ACC& FIRSTPRIVATE(KF_FS,KNUMP,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0) &
+#ifndef _CRAYFTN
+    !$ACC& ASYNC(1)
+#else
+    !$ACC&
+#endif
+#endif
+    DO KMLOC=1,KNUMP
+      DO JF=1,2*KF_FS
+        KM = KMYMS(KMLOC)
+        IA  = 1+MOD(KNTMAX-KM+2,2)
+        IF (KM /= 0) THEN
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX-KM+2)/2
+            POA1(JF,IA+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*KOUT_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KOUT_STRIDES0)
+          ENDDO
+        ELSEIF (MOD(JF-1,2) == 0) THEN
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX+2)/2
+            POA1(JF,IA+1+(J-1)*2,KMLOC) = ZOUT0((JF-1)/2+1+(J-1)*KOUT0_STRIDES0)
+          ENDDO
+        ENDIF
+      ENDDO
+    ENDDO
+  END SUBROUTINE LEDIR_STORE_ANTISYM
+
+  SUBROUTINE LEDIR_STORE_SYM(POA1,ZOUT,KOUT,ZOUT0,KOUT0, &
+    &                        KMYMS,KOFFSETS_GEMM2,KNUMP, &
+    &                        KF_FS,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0)
+    IMPLICIT NONE
+
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KOUT
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KOUT0, KNUMP
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KF_FS, KNSMAX, KNTMAX
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KOUT_STRIDES0, KOUT0_STRIDES0
+    REAL(KIND=JPRBT),   INTENT(INOUT) :: POA1(:,:,:)
+    REAL(KIND=JPRBT),   INTENT(IN)    :: ZOUT(KOUT)
+    REAL(KIND=JPRD),    INTENT(IN)    :: ZOUT0(KOUT0)
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
+
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IS, JF, J
+
+#ifdef OMPGPU
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IS) &
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUT,ZOUT0,POA1) &
+    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KNUMP) &
+    !$OMP& FIRSTPRIVATE(KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0)
+#endif
+#ifdef ACCGPU
+    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS,J) DEFAULT(NONE) &
+    !$ACC& PRESENT(POA1,ZOUT,ZOUT0,KMYMS,KOFFSETS_GEMM2) &
+    !$ACC& FIRSTPRIVATE(KF_FS,KNUMP,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0) &
+#ifndef _CRAYFTN
+    !$ACC& ASYNC(1)
+#else
+    !$ACC&
+#endif
+#endif
+    DO KMLOC=1,KNUMP
+      DO JF=1,2*KF_FS
+        KM = KMYMS(KMLOC)
+        IS  = 1+MOD(KNTMAX-KM+1,2)
+        IF (KM /= 0) THEN
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX-KM+3)/2
+            POA1(JF,IS+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*KOUT_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KOUT_STRIDES0)
+          ENDDO
+        ELSEIF (MOD(JF-1,2) == 0) THEN
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX+3)/2
+            POA1(JF,IS+1+(J-1)*2,KMLOC) = ZOUT0((JF-1)/2+1+(J-1)*KOUT0_STRIDES0)
+          ENDDO
+        ENDIF
+      ENDDO
+    ENDDO
+  END SUBROUTINE LEDIR_STORE_SYM
 END MODULE LEDIR_MOD

@@ -135,13 +135,19 @@ CONTAINS
     !     LOCAL
     INTEGER(KIND=JPIM)  :: KS(D%NUMP), NS(D%NUMP)
     INTEGER(KIND=JPIB)  :: AOFFSETS(D%NUMP), BOFFSETS(D%NUMP), COFFSETS(D%NUMP)
-    INTEGER(KIND=JPIM)  :: KM, KMLOC, IA, IS, JK, J, IMLOC0(1)
+    INTEGER(KIND=JPIM)  :: KM, KMLOC, IMLOC0(1)
     INTEGER(KIND=JPIM)  :: IOUT_STRIDES0
     INTEGER(KIND=JPIB)  :: IOUT_SIZE
     INTEGER(KIND=JPIM)  :: IIN_STRIDES0
     INTEGER(KIND=JPIB)  :: IIN_SIZE
     INTEGER(KIND=JPIM)  :: IOUT0_STRIDES0, IOUT0_SIZE
     INTEGER(KIND=JPIM)  :: IIN0_STRIDES0, IIN0_SIZE
+
+    ! An element of a non-CONTIGUOUS pointer array may not be sequence-associated with an
+    ! explicit-shape dummy (F2018 15.5.2.4), so the load bodies at the end of this module are
+    ! handed these aliases instead. They address the same allocator slab, which is contiguous.
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: ZINP_C(:)
+    REAL(KIND=JPRD),  POINTER, CONTIGUOUS :: ZINP0_C(:)
 
     REAL(KIND=JPHOOK) :: ZHOOK_HANDLE
 
@@ -171,6 +177,8 @@ CONTAINS
     CALL LEINV_STRIDES(KF_LEG,IOUT_STRIDES0,IOUT_SIZE,IIN_STRIDES0,IIN_SIZE,&
                        IOUT0_STRIDES0,IOUT0_SIZE,IIN0_STRIDES0,IIN0_SIZE)
 
+    ZINP_C => ZINP
+    ZINP0_C => ZINP0
 
 #ifdef OMPGPU
     ! ZINP/ZOUT*/PIA are growing-allocator buffers. Under OMPGPU the allocator hands out
@@ -181,9 +189,10 @@ CONTAINS
     ! HAS_DEVICE_ADDR states the fact directly and skips both. It does not make the launch
     ! free: the assertion covers the data, not the dummy's descriptor, which is a host stack
     ! object holding the bounds and strides the kernel needs to index with. That 48 bytes
-    ! (96 for rank-3 PIA) is still allocated, copied and freed per launch. Removing it would
-    ! mean declaring these assumed-size so no descriptor exists, which the OpenACC path
-    ! below blocks.
+    ! (96 for rank-3 PIA) is still allocated, copied and freed per launch. The compute
+    ! constructs that fill ZINP and ZINP0 therefore live in LEINV_LOAD_ANTISYM and
+    ! LEINV_LOAD_SYM at the end of this module, whose dummies are explicit-shape and so carry
+    ! no descriptor at all. PIA still carries one, for the reason given there.
     ! PIA is assumed-shape rather than a POINTER because both callers pass an array section,
     ! but the section is taken from an allocator buffer in each case (LTINV_MOD's PIA and
     ! LTDIRAD_MOD's POA1), so its base address is a device address like the rest.
@@ -214,59 +223,9 @@ CONTAINS
     !    DO=1,7/2+1 ... 1..4
     !       PIA_2=2+1+(1..4-1)*2 ...3+(0..3)*2 .... 3,5,7,9
 
-#ifdef OMPGPU
-    ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
-    ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
-    !$OMP& PRIVATE(KM,IA,J) &
-    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(IIN_STRIDES0,IIN0_STRIDES0)
-#endif
-#ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) &
-    !$ACC& FIRSTPRIVATE(KF_LEG,IIN_STRIDES0,IIN0_STRIDES0) DEFAULT(NONE) &
-#ifdef _CRAYFTN
-    !$ACC&
-#else
-    !$ACC& ASYNC(1)
-#endif
-#endif
-    DO KMLOC=1,D_NUMP
-      DO JK=1,2*KF_LEG
-        KM =  D_MYMS(KMLOC)
-        IA  = 1+MOD(R_NSMAX-KM+2,2)
-        IF(KM /= 0)THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX-KM+2)/2
-            ZINP(JK+(J-1)*IIN_STRIDES0+D_OFFSETS_GEMM2(KMLOC)*IIN_STRIDES0)=PIA(JK,IA+1+(J-1)*2,KMLOC)
-          ENDDO
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
-#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          !$ACC LOOP SEQ
-          DO J=(R_NSMAX-KM+2)/2+1,ALIGN((R_NSMAX-KM+2)/2,A)
-            ZINP(JK+(J-1)*IIN_STRIDES0+D_OFFSETS_GEMM2(KMLOC)*IIN_STRIDES0)=0
-          ENDDO
-#endif
-        ELSEIF (MOD((JK-1),2) == 0) THEN
-          ! every other field is sufficient because Im(KM=0) == 0
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX+2)/2
-            ZINP0((JK-1)/2+1+(J-1)*IIN0_STRIDES0) = PIA(JK,IA+1+(J-1)*2,KMLOC)
-          ENDDO
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
-#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          !$ACC LOOP SEQ
-          DO J=(R_NSMAX+2)/2+1,ALIGN((R_NSMAX+2)/2,A)
-            ZINP0((JK-1)/2+1+(J-1)*IIN0_STRIDES0) = 0
-          ENDDO
-#endif
-        ENDIF
-      ENDDO
-    ENDDO
+    CALL LEINV_LOAD_ANTISYM(PIA,ZINP_C(1),SIZE(ZINP,KIND=JPIB),ZINP0_C(1),SIZE(ZINP0), &
+      &                     D_MYMS,D_OFFSETS_GEMM2,D_NUMP, &
+      &                     KF_LEG,R_NSMAX,IIN_STRIDES0,IIN0_STRIDES0)
 
 
     IF (LSYNC_TRANS) THEN
@@ -360,58 +319,9 @@ CONTAINS
     !    DO=1,5
     !       PIA_2=1+1+(1..5-1)*2 ...2+(0..4)*2 .... 2,4,6,8,10
 
-#ifdef OMPGPU
-    ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
-    ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
-    !$OMP& PRIVATE(KM,IS,J) &
-    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(IIN_STRIDES0,IIN0_STRIDES0)
-#endif
-#ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS,J) &
-    !$ACC& FIRSTPRIVATE(KF_LEG,IIN_STRIDES0,IIN0_STRIDES0) DEFAULT(NONE) &
-#ifndef _CRAYFTN
-    !$ACC& ASYNC(1)
-#else
-    !$ACC&
-#endif
-#endif
-    DO KMLOC=1,D_NUMP
-      DO JK=1,2*KF_LEG
-        KM =  D_MYMS(KMLOC)
-        IS  = 1+MOD(R_NSMAX-KM+1,2)
-        IF(KM /= 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX-KM+3)/2
-            ZINP(JK+(J-1)*IIN_STRIDES0+D_OFFSETS_GEMM2(KMLOC)*IIN_STRIDES0)=PIA(JK,IS+1+(J-1)*2,KMLOC)
-          ENDDO
-#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
-          !$ACC LOOP SEQ
-          DO J=(R_NSMAX-KM+3)/2+1,ALIGN((R_NSMAX-KM+3)/2,A)
-            ZINP(JK+(J-1)*IIN_STRIDES0+D_OFFSETS_GEMM2(KMLOC)*IIN_STRIDES0)=0
-          ENDDO
-#endif
-        ELSEIF (MOD((JK-1),2) == 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(R_NSMAX+3)/2
-            ZINP0((JK-1)/2+1+(J-1)*IIN0_STRIDES0) = PIA(JK,IS+1+(J-1)*2,KMLOC)
-          ENDDO
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
-#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          !$ACC LOOP SEQ
-          DO J=(R_NSMAX+3)/2+1,ALIGN((R_NSMAX+3)/2,A)
-            ZINP0((JK-1)/2+1+(J-1)*IIN0_STRIDES0) = 0
-          ENDDO
-#endif
-        ENDIF
-      ENDDO
-    ENDDO
+    CALL LEINV_LOAD_SYM(PIA,ZINP_C(1),SIZE(ZINP,KIND=JPIB),ZINP0_C(1),SIZE(ZINP0), &
+      &                 D_MYMS,D_OFFSETS_GEMM2,D_NUMP, &
+      &                 KF_LEG,R_NSMAX,IIN_STRIDES0,IIN0_STRIDES0)
 
     IF (LSYNC_TRANS) THEN
 #ifdef ACCGPU
@@ -505,4 +415,161 @@ CONTAINS
     !     ------------------------------------------------------------------
     END ASSOCIATE
   END SUBROUTINE LEINV
+
+  ! Bodies that load the spectral fields into the GEMM input, with explicit-shape dummy
+  ! arguments. A POINTER or assumed-shape actual is described by a dope vector, and the
+  ! compiler puts that dope vector in the device data environment on every launch: create map
+  ! entry, copy 48-120 bytes, tear the entry down. HAS_DEVICE_ADDR does not suppress it.
+  ! Explicit-shape dummies are described by their extents, which travel as FIRSTPRIVATE
+  ! scalars, so nothing has to be copied.
+  ! PIA is the exception and keeps its descriptor: LEINV is also called from LTINV with a
+  ! rank-3 section of the field dimension, whose columns are strided by the parent leading
+  ! dimension. An explicit-shape dummy would need that leading dimension, which is not
+  ! recoverable from the section, so it would have to come from LEINV's callers.
+  SUBROUTINE LEINV_LOAD_ANTISYM(PIA,ZINP,KINP,ZINP0,KINP0, &
+    &                           KMYMS,KOFFSETS_GEMM2,KNUMP, &
+    &                           KF_LEG,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
+    IMPLICIT NONE
+
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KINP
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KINP0, KNUMP
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KF_LEG, KNSMAX, KIN_STRIDES0, KIN0_STRIDES0
+    REAL(KIND=JPRB),    INTENT(IN)    :: PIA(:,:,:)
+    REAL(KIND=JPRBT),   INTENT(INOUT) :: ZINP(KINP)
+    REAL(KIND=JPRD),    INTENT(INOUT) :: ZINP0(KINP0)
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
+
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IA, JK, J
+
+#ifdef OMPGPU
+    ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
+    ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
+    !$OMP& PRIVATE(KM,IA,J) &
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
+    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG,KNUMP) &
+    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
+#endif
+#ifdef ACCGPU
+    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) &
+    !$ACC& PRESENT(PIA,ZINP,ZINP0,KMYMS,KOFFSETS_GEMM2) &
+    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0) DEFAULT(NONE) &
+#ifdef _CRAYFTN
+    !$ACC&
+#else
+    !$ACC& ASYNC(1)
+#endif
+#endif
+    DO KMLOC=1,KNUMP
+      DO JK=1,2*KF_LEG
+        KM =  KMYMS(KMLOC)
+        IA  = 1+MOD(KNSMAX-KM+2,2)
+        IF(KM /= 0)THEN
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX-KM+2)/2
+            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IA+1+(J-1)*2,KMLOC)
+          ENDDO
+          ! those are only needed with tensor cores (zinp might contain NaNs!)
+#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
+          !$ACC LOOP SEQ
+          DO J=(KNSMAX-KM+2)/2+1,ALIGN((KNSMAX-KM+2)/2,A)
+            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=0
+          ENDDO
+#endif
+        ELSEIF (MOD((JK-1),2) == 0) THEN
+          ! every other field is sufficient because Im(KM=0) == 0
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX+2)/2
+            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IA+1+(J-1)*2,KMLOC)
+          ENDDO
+          ! those are only needed with tensor cores (zinp might contain NaNs!)
+#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
+          !$ACC LOOP SEQ
+          DO J=(KNSMAX+2)/2+1,ALIGN((KNSMAX+2)/2,A)
+            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = 0
+          ENDDO
+#endif
+        ENDIF
+      ENDDO
+    ENDDO
+  END SUBROUTINE LEINV_LOAD_ANTISYM
+
+  SUBROUTINE LEINV_LOAD_SYM(PIA,ZINP,KINP,ZINP0,KINP0, &
+    &                       KMYMS,KOFFSETS_GEMM2,KNUMP, &
+    &                       KF_LEG,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
+    IMPLICIT NONE
+
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KINP
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KINP0, KNUMP
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KF_LEG, KNSMAX, KIN_STRIDES0, KIN0_STRIDES0
+    REAL(KIND=JPRB),    INTENT(IN)    :: PIA(:,:,:)
+    REAL(KIND=JPRBT),   INTENT(INOUT) :: ZINP(KINP)
+    REAL(KIND=JPRD),    INTENT(INOUT) :: ZINP0(KINP0)
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
+    INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
+
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IS, JK, J
+
+#ifdef OMPGPU
+    ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
+    ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
+    !$OMP& PRIVATE(KM,IS,J) &
+    !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
+    !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG,KNUMP) &
+    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
+#endif
+#ifdef ACCGPU
+    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS,J) &
+    !$ACC& PRESENT(PIA,ZINP,ZINP0,KMYMS,KOFFSETS_GEMM2) &
+    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0) DEFAULT(NONE) &
+#ifndef _CRAYFTN
+    !$ACC& ASYNC(1)
+#else
+    !$ACC&
+#endif
+#endif
+    DO KMLOC=1,KNUMP
+      DO JK=1,2*KF_LEG
+        KM =  KMYMS(KMLOC)
+        IS  = 1+MOD(KNSMAX-KM+1,2)
+        IF(KM /= 0) THEN
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX-KM+3)/2
+            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IS+1+(J-1)*2,KMLOC)
+          ENDDO
+#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
+          ! those are only needed with tensor cores (zinp might contain NaNs!)
+          !$ACC LOOP SEQ
+          DO J=(KNSMAX-KM+3)/2+1,ALIGN((KNSMAX-KM+3)/2,A)
+            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=0
+          ENDDO
+#endif
+        ELSEIF (MOD((JK-1),2) == 0) THEN
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO J=1,(KNSMAX+3)/2
+            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IS+1+(J-1)*2,KMLOC)
+          ENDDO
+          ! those are only needed with tensor cores (zinp might contain NaNs!)
+#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
+          !$ACC LOOP SEQ
+          DO J=(KNSMAX+3)/2+1,ALIGN((KNSMAX+3)/2,A)
+            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = 0
+          ENDDO
+#endif
+        ENDIF
+      ENDDO
+    ENDDO
+  END SUBROUTINE LEINV_LOAD_SYM
 END MODULE LEINV_MOD

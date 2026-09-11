@@ -204,6 +204,10 @@ else()
   set( ECTRANS_DEVICE_ADDR_CLAUSE "HAS_DEVICE_ADDR" )
 endif()
 
+# The PGP* gridpoint arrays of TRGTOL and TRLTOG are deliberately not covered by either
+# macro above. They take a plain MAP(ALLOC:...) on every compiler, which is neither of the
+# two expansions here, for reasons written out at the constructs that use them.
+
 # ECTRANS_LOOP_BOUNDS_CLAUSE is the data-sharing clause the compute constructs use for the
 # scalars that bound their loops, which they have to name for DEFAULT(NONE) to be satisfied.
 # It is a separate clause from the rest because which one is used decides the launch geometry on
