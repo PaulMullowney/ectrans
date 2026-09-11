@@ -115,11 +115,13 @@ CONTAINS
     REAL(KIND=JPRB)    ,OPTIONAL, INTENT(OUT) :: PGP2(:,:,:)
 
     ! Local variables
-    REAL(KIND=JPRBT), POINTER :: FOUBUF_IN(:), FOUBUF(:)
-    REAL(KIND=JPRBT), POINTER :: PREEL_REAL(:), PREEL_COMPLEX(:)
+    ! CONTIGUOUS for the reason given in INV_TRANS_CTL: these address allocator slabs, and
+    ! without the attribute the call to a CONTIGUOUS dummy copies through a host temporary.
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: FOUBUF_IN(:), FOUBUF(:)
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: PREEL_REAL(:), PREEL_COMPLEX(:)
 
-    REAL(KIND=JPRBT), POINTER :: ZINPS(:), ZINPA(:)
-    REAL(KIND=JPRD), POINTER :: ZINPS0(:), ZINPA0(:)
+    REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: ZINPS(:), ZINPA(:)
+    REAL(KIND=JPRD), POINTER, CONTIGUOUS :: ZINPS0(:), ZINPA0(:)
 
     TYPE(BUFFERED_ALLOCATOR) :: ALLOCATOR
     TYPE(TRLTOG_HANDLE) :: HTRLTOG
