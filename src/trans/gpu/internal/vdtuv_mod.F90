@@ -11,7 +11,7 @@
 
 MODULE VDTUV_MOD
 CONTAINS
-SUBROUTINE VDTUV(KFIELD,PEPSNM,PVOR,PDIV,PU,PV)
+SUBROUTINE VDTUV(KFIELD,KLD,PEPSNM,PVOR,PDIV,PU,PV)
 
 USE PARKIND_ECTRANS, ONLY: JPIM, JPRB, JPRBT
 USE TPM_DIM,         ONLY: R
@@ -31,6 +31,8 @@ USE TPM_DISTR,       ONLY: D
 
 !        Explicit arguments :  KM -zonal wavenumber (input-c)
 !        --------------------  KFIELD - number of fields (input-c)
+!                              KLD - leading dimension of the spectral buffer the
+!                                    four fields below are slices of (input-c)
 !                              PEPSNM - REPSNM for wavenumber KM (input-c)
 !                              PVOR(NLEI1,2*KFIELD) - vorticity (input)
 !                              PDIV(NLEI1,2*KFIELD) - divergence (input)
@@ -75,9 +77,16 @@ IMPLICIT NONE
 
 INTEGER(KIND=JPIM) :: KM, KMLOC
 INTEGER(KIND=JPIM), INTENT(IN) :: KFIELD
+! The four fields are explicit shape so that no array descriptor has to be mapped to the
+! device on every launch of the compute construct below. They are slices of a larger
+! spectral buffer, so their first extent is that buffer's leading dimension KLD and the
+! caller passes the base element of each slice; only 1:2*KFIELD of it is addressed here.
+! The second extent is that buffer's, which PVOR is read one past JI at, so it matches
+! PIA's R%NSMAX+4.
+INTEGER(KIND=JPIM), INTENT(IN) :: KLD
 REAL(KIND=JPRBT), INTENT(IN)   :: PEPSNM(1:D%NUMP,0:R%NSMAX+2)
-REAL(KIND=JPRB), INTENT(INOUT) :: PVOR(:,:,:),PDIV(:,:,:)
-REAL(KIND=JPRB), INTENT(OUT)   :: PU  (:,:,:),PV  (:,:,:)
+REAL(KIND=JPRB), INTENT(INOUT) :: PVOR(KLD,R%NSMAX+4,D%NUMP),PDIV(KLD,R%NSMAX+4,D%NUMP)
+REAL(KIND=JPRB), INTENT(OUT)   :: PU  (KLD,R%NSMAX+4,D%NUMP),PV  (KLD,R%NSMAX+4,D%NUMP)
 
 !     LOCAL INTEGER SCALARS
 INTEGER(KIND=JPIM) :: II, IR, J, JN, JI
@@ -94,6 +103,9 @@ ASSOCIATE(D_NUMP=>D%NUMP, D_MYMS=>D%MYMS, R_NSMAX=>R%NSMAX, F_RLAPIN=>F%RLAPIN)
 !$ACC&      PRESENT(PU, PV)
 #endif
 #ifdef OMPGPU
+! PVOR/PDIV/PU/PV are backed by the growing allocator. Their storage is registered with
+! omp_target_associate_ptr, so ordinary mapping resolves it inside the nested compute
+! constructs, but it is never entered in the present table and so cannot be MAP(PRESENT)'d.
 ! Only the ASSOCIATE aliases are mapped: naming the parent derived type makes the runtime
 ! walk and re-copy every one of its allocatable component descriptors on region entry.
 !$OMP TARGET DATA                                                   &
