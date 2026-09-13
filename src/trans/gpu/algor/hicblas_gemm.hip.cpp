@@ -10,10 +10,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #include "hicblas.h"
 #ifdef USE_CUTLASS
@@ -48,6 +51,19 @@ template <> struct std::hash<cache_key> {
 };
 
 namespace {
+// See the matching comment in hicfft.rocfft.cpp. The batchCount GEMMs are independent -- one
+// per m-wavenumber, each only a handful of workgroups -- but a single-stream capture chains
+// them and ROCm replays the chain serially. Spreading the capture over a few streams is what
+// makes the independence survive into the graph.
+static int graph_capture_streams() {
+  static const int n = [] {
+    const char *e = std::getenv("ECTRANS_GRAPH_STREAMS");
+    int v = e ? std::atoi(e) : 4;
+    return v < 1 ? 1 : v;
+  }();
+  return n;
+}
+
 template <typename Gemm> auto &get_graph_cache() {
   // we store at most one graph per "m" (# fields) and "blas id" and resolution
   static std::unordered_map<cache_key, std::shared_ptr<hipGraphExec_t>>
@@ -147,18 +163,44 @@ void run_group_graph(Gemm &&gemm, int resol_id, int m, const int *n,
     HIC_CHECK(hipGraphInstantiate(&instance, new_graph, NULL, NULL, 0));
     HIC_CHECK(hipGraphDestroy(new_graph));
 #else
+    int const nstreams = std::max(1, std::min(graph_capture_streams(), batchCount));
+    std::vector<hipStream_t> extraStreams(nstreams - 1);
+    for (auto &s : extraStreams)
+      HIC_CHECK(hipStreamCreate(&s));
+    auto stream_for = [&](int i) {
+      int j = i % nstreams;
+      return j == 0 ? captureStream : extraStreams[j - 1];
+    };
+    std::vector<hipEvent_t> events(nstreams);
+    for (auto &e : events)
+      HIC_CHECK(hipEventCreateWithFlags(&e, hipEventDisableTiming));
+
     HIC_CHECK(hipStreamBeginCapture(captureStream, hipStreamCaptureModeGlobal));
+    HIC_CHECK(hipEventRecord(events[0], captureStream));
+    for (int j = 1; j < nstreams; ++j) // fork, so the extra streams join the capture
+      HIC_CHECK(hipStreamWaitEvent(extraStreams[j - 1], events[0], 0));
+
     for (int i = 0; i < batchCount; ++i) {
       if (m == 0 || n[i] == 0 || k[i] == 0)
         continue;
 
-      gemm(captureStream, m, n[i], k[i], alpha, A + offsetsA[i], lda, B + offsetsB[i],
+      gemm(stream_for(i), m, n[i], k[i], alpha, A + offsetsA[i], lda, B + offsetsB[i],
            ldb[i], beta, C + offsetsC[i], ldc);
+    }
+
+    for (int j = 1; j < nstreams; ++j) { // join back to a single sink
+      HIC_CHECK(hipEventRecord(events[j], extraStreams[j - 1]));
+      HIC_CHECK(hipStreamWaitEvent(captureStream, events[j], 0));
     }
     hipGraph_t my_graph;
     HIC_CHECK(hipStreamEndCapture(captureStream, &my_graph));
     hipGraphExec_t instance;
     HIC_CHECK(hipGraphInstantiate(&instance, my_graph, NULL, NULL, 0));
+    HIC_CHECK(hipGraphDestroy(my_graph));
+    for (auto &e : events)
+      HIC_CHECK(hipEventDestroy(e));
+    for (auto &s : extraStreams)
+      HIC_CHECK(hipStreamDestroy(s));
 #endif
     HIC_CHECK(hipStreamDestroy(captureStream));
 
