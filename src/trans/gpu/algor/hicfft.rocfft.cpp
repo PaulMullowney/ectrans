@@ -1,6 +1,7 @@
 #include "hicfft_rocfft.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +17,27 @@ static void ensure_rocfft_initialized() {
     fftSafeCall(rocfft_setup());
     initialized = true;
   }
+}
+
+// Number of streams to spread the plan loop over when capturing the graph.
+//
+// The nfft row-length FFTs are independent, but capture inherits stream order, so capturing
+// them all on one stream builds a linear chain and they replay one at a time. Unlike CUDA,
+// ROCm does not recover the parallelism from the node dependencies -- a graph of
+// dependency-free root nodes still replays serially -- so the independence has to be
+// expressed as stream structure at capture time and survives into the graph.
+//
+// Measured standalone on gfx950 with 640 independent kernels of the size this code emits:
+// 1 stream 1.00x, 2 streams 2.02x, 4 streams 4.03x, 8 and above no further gain. The ceiling
+// is GPU_MAX_HW_QUEUES, whose default is 4; raising it makes things worse, so 4 is the
+// default here. ECTRANS_GRAPH_STREAMS=1 restores the old single-stream chain.
+static int graph_capture_streams() {
+  static const int n = [] {
+    const char *e = std::getenv("ECTRANS_GRAPH_STREAMS");
+    int v = e ? std::atoi(e) : 4;
+    return v < 1 ? 1 : v;
+  }();
+  return n;
 }
 
 namespace {
@@ -246,23 +268,42 @@ void run_group_graph(typename Type::real *data_real,
     auto plans =
         plan_all<Type, Direction>(resol_id, kfield, loens, nfft, offsets);
 
-    // create a temporary stream
-    hipStream_t stream;
-    HIC_CHECK(hipStreamCreate(&stream));
+    // create temporary streams to capture on, and fork/join events to tie them together
+    int const nstreams = std::min<int>(graph_capture_streams(), plans.size());
+    std::vector<hipStream_t> streams(nstreams);
+    for (auto &s : streams)
+      HIC_CHECK(hipStreamCreate(&s));
+    std::vector<hipEvent_t> events(nstreams);
+    for (auto &e : events)
+      HIC_CHECK(hipEventCreateWithFlags(&e, hipEventDisableTiming));
 
-    for (auto &plan : plans) // set the streams
-      plan.set_stream(stream);
+    for (size_t i = 0; i < plans.size(); ++i) // set the streams
+      plans[i].set_stream(streams[i % nstreams]);
 
-    // now create the graph
-    HIC_CHECK(hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal));
+    // now create the graph. The fork makes streams 1..n-1 part of the capture; without it
+    // work issued on them is not captured at all.
+    HIC_CHECK(hipStreamBeginCapture(streams[0], hipStreamCaptureModeGlobal));
+    HIC_CHECK(hipEventRecord(events[0], streams[0]));
+    for (int j = 1; j < nstreams; ++j)
+      HIC_CHECK(hipStreamWaitEvent(streams[j], events[0], 0));
+
     for (auto &plan : plans) {
       plan.exec(data_real, data_complex);
     }
+
+    for (int j = 1; j < nstreams; ++j) { // join back so the capture has a single sink
+      HIC_CHECK(hipEventRecord(events[j], streams[j]));
+      HIC_CHECK(hipStreamWaitEvent(streams[0], events[j], 0));
+    }
     hipGraph_t my_graph;
-    HIC_CHECK(hipStreamEndCapture(stream, &my_graph));
+    HIC_CHECK(hipStreamEndCapture(streams[0], &my_graph));
     hipGraphExec_t instance;
     HIC_CHECK(hipGraphInstantiate(&instance, my_graph, NULL, NULL, 0));
-    HIC_CHECK(hipStreamDestroy(stream));
+    HIC_CHECK(hipGraphDestroy(my_graph));
+    for (auto &e : events)
+      HIC_CHECK(hipEventDestroy(e));
+    for (auto &s : streams)
+      HIC_CHECK(hipStreamDestroy(s));
 
     graphCache.insert({key, std::shared_ptr<hipGraphExec_t>(
                                 new hipGraphExec_t{instance}, [](auto ptr) {
