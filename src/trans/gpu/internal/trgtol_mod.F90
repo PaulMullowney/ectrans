@@ -475,6 +475,7 @@ CONTAINS
 #endif
 
     CALL GSTATS(1602,0)
+    CALL GSTATS(460,0)
     ! Allocate this buffer. Add 1 for the potential self sends
     ALLOCATE(IFLDA(KF_GP,1+ISEND_COUNTS))
 
@@ -593,6 +594,7 @@ CONTAINS
     !$ACC WAIT(1)
 #endif
 
+    CALL GSTATS(460,1)
     CALL GSTATS(1602,1)
 
     IF (LSYNC_TRANS) THEN
@@ -644,6 +646,7 @@ CONTAINS
       & CALL MPL_ABORT("Overflow in trgtol")
 
     !  Receive loop.........................................................
+    CALL GSTATS(461,0)
     DO INR=1,IRECV_COUNTS
       IR=IR+1
       IPROC=IRECV_TO_PROC(INR)
@@ -675,12 +678,14 @@ CONTAINS
 #endif
     ENDDO
 
+    CALL GSTATS(461,1)
+
     ! Copy local contribution
     IF(LLOCAL_CONTRIBUTION)THEN
       ISEND_WSET_OFFSET_V = ISEND_WSET_OFFSET(MYSETW)
       ISEND_WSET_SIZE_V = ISEND_WSET_SIZE(MYSETW)
       IGP_V = D%NGP_OFFSET(MYPROC)
-      CALL GSTATS(1601,0)
+      CALL GSTATS(462,0)
       ASSOCIATE(D_NGP_A=>D%NGP_A, D_NGP_B=>D%NGP_B, D_NGP_STRIDE=>D%NGP_STRIDE)
       IF(PRESENT(PGP)) THEN
 #ifdef OMPGPU
@@ -750,13 +755,15 @@ CONTAINS
         ENDDO
       ENDIF
       END ASSOCIATE
-      CALL GSTATS(1601,1)
+      CALL GSTATS(462,1)
     ENDIF
 
+    CALL GSTATS(463,0)
     IF(IR > 0) THEN
       CALL MPL_WAIT(KREQUEST=IREQ(1:IR), &
         & CDSTRING='TRGTOL: WAIT FOR SENDS AND RECEIVES')
     ENDIF
+    CALL GSTATS(463,1)
 #ifdef USE_GPU_AWARE_MPI
 #ifdef ACCGPU
     !$ACC END HOST_DATA
@@ -780,6 +787,7 @@ CONTAINS
     !  Unpack loop.........................................................
 
     CALL GSTATS(1603,0)
+    CALL GSTATS(464,0)
     ASSOCIATE(D_NGP_A=>D%NGP_A, D_NGP_B=>D%NGP_B, D_NGP_STRIDE=>D%NGP_STRIDE)
     DO INR=1,IRECV_COUNTS
       IPROC=IRECV_TO_PROC(INR)
@@ -810,6 +818,7 @@ CONTAINS
     !$ACC WAIT(1)
 #endif
     END ASSOCIATE
+    CALL GSTATS(464,1)
     CALL GSTATS(1603,1)
 
 #ifdef OMPGPU
