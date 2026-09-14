@@ -26,6 +26,7 @@ use mpl_module
 use yomgstats, only: jpmaxstat, gstats_lstats => lstats
 use yomhook, only : dr_hook_init
 use ectrans_memory, only : allocator
+use ectrans_device, only : ectrans_select_device
 use ec_checksum_mod, only : fletcher16_hex
 
 #if USE_FIELD_API
@@ -158,6 +159,9 @@ logical :: lmpoff = .false. ! Message passing switch
 integer :: verbosity = 0
 
 integer(kind=jpim) :: nproc ! Number of procs
+integer(kind=jpim) :: igpu_device ! GPU bound to this rank, -1 if the runtime default was kept
+integer(kind=jpim) :: igpu_count  ! Number of GPUs visible to this rank
+character(len=32)  :: cgpu_source ! Launcher variable the node-local rank came from
 integer(kind=jpim) :: nthread
 integer(kind=jpim) :: nprgpns ! Grid-point decomp
 integer(kind=jpim) :: nprgpew ! Grid-point decomp
@@ -237,6 +241,10 @@ if (VERSION == "gpu") then
   lpinning = .true.
 endif
 
+! Bind this rank to its own GPU before anything initialises a device context, which includes
+! the acc_init inside get_command_line_arguments. A no-op when only one device is visible.
+call ectrans_select_device(igpu_device, igpu_count, cgpu_source)
+
 ! Setup
 call get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, nlev, lvordiv, lscders, &
   &                             luvder, luseflt, nopt_mem_tr, nproma, npromatr, verbosity, &
@@ -268,6 +276,21 @@ else
   lsync_trans = .false.
 endif
 nthread = oml_max_threads()
+
+! Report the device binding once MPI is up, so a run that silently shares one GPU across all
+! ranks is visible in the log rather than only in rocm-smi or nvidia-smi.
+if (VERSION == "gpu" .and. verbosity >= 0 .and. myproc == 1) then
+  if (igpu_device >= 0) then
+    write(nout,'(a,i0,a,a,a)') 'GPU affinity: ', igpu_count, &
+      & ' devices visible, one bound per rank from ', trim(cgpu_source), &
+      & ' (rank 1 -> device 0)'
+  elseif (igpu_count > 1) then
+    write(nout,'(a,i0,a)') 'GPU affinity: WARNING ', igpu_count, &
+      & ' devices visible but no launcher rank found; all ranks will share one device'
+  else
+    write(nout,'(a)') 'GPU affinity: 1 device visible per rank (externally masked)'
+  endif
+endif
 
 call dr_hook_init()
 

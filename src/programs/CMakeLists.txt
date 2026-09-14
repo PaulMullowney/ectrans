@@ -12,6 +12,7 @@ foreach( program ectrans-benchmark )
   list( APPEND util_src
     util/ectrans_memory.F90
     util/ectrans_memory.c
+    util/ectrans_device.F90
   )
 
   if (HAVE_FIELD_API)
@@ -39,9 +40,12 @@ foreach( program ectrans-benchmark )
   endif()
 
   if( HAVE_GPU )
+    # ${GPU_OFFLOAD}GPU matches what trans_gpu is built with, so ectrans_device can bind the
+    # offload runtime's default device and not just the HIP/CUDA one.
     list( APPEND util_PRIVATE_DEFINITIONS
       $<${HAVE_CUDA}:CUDA>
       $<${HAVE_HIP}:HIP>
+      ${GPU_OFFLOAD}GPU
     )
     list( APPEND util_PRIVATE_LIBRARIES
       $<${HAVE_CUDA}:CUDA::cudart>
