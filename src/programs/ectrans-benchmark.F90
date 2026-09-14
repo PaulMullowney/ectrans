@@ -2228,6 +2228,27 @@ subroutine gstats_labels
   call gstats_label(157, '   ', 'FTINV_CTL      - L to G transposition')
   call gstats_label(158, '   ', 'FTDIR_CTL      - G to L transposition')
   call gstats_label(400, '   ', 'GSTATS         - GSTATS itself')
+  ! Kernel/MPI split inside the two gridpoint transpositions.
+  call gstats_label(450, '   ', 'TRLTOG kernel  - local contribution')
+  call gstats_label(451, '   ', 'TRLTOG kernel  - pack send buffer')
+  call gstats_label(452, '   ', 'TRLTOG MPI     - post recv/send')
+  call gstats_label(453, '   ', 'TRLTOG MPI     - wait for exchange')
+  call gstats_label(454, '   ', 'TRLTOG kernel  - unpack recv buffer')
+  call gstats_label(460, '   ', 'TRGTOL kernel  - pack send buffer')
+  call gstats_label(461, '   ', 'TRGTOL MPI     - post recv/send')
+  call gstats_label(462, '   ', 'TRGTOL kernel  - local contribution')
+  call gstats_label(463, '   ', 'TRGTOL MPI     - wait for exchange')
+  call gstats_label(464, '   ', 'TRGTOL kernel  - unpack recv buffer')
+  ! Kernel/MPI split inside the two spectral transpositions. 411 and 421 already bracket the
+  ! collectives, but TRGTOL and TRLTOG reuse those numbers, so these get their own.
+  call gstats_label(470, '   ', 'TRLTOM kernel  - copy to self')
+  call gstats_label(471, '   ', 'TRLTOM MPI     - alltoallv')
+  call gstats_label(472, '   ', 'TRLTOM kernel  - pack send buffer')
+  call gstats_label(473, '   ', 'TRLTOM kernel  - unpack recv buffer')
+  call gstats_label(480, '   ', 'TRMTOL kernel  - copy to self')
+  call gstats_label(481, '   ', 'TRMTOL MPI     - alltoallv')
+  call gstats_label(482, '   ', 'TRMTOL kernel  - pack send buffer')
+  call gstats_label(483, '   ', 'TRMTOL kernel  - unpack recv buffer')
 
 end subroutine gstats_labels
 
