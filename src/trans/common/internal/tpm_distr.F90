@@ -174,6 +174,19 @@ INTEGER(KIND=JPIM) ,ALLOCATABLE :: NPROCA_GP(:) ! Number of grid-points per a-se
 INTEGER(KIND=JPIB), ALLOCATABLE :: OFFSETS_GEMM1(:), OFFSETS_GEMM2(:), OFFSETS_GEMM_MATRIX(:)
 INTEGER(KIND=JPIM), ALLOCATABLE :: LEGENDRE_MATRIX_STRIDES(:)
 
+! Fourier-buffer offset of each gridpoint exchanged by the gridpoint/Fourier
+! transpositions (GPU only). TRLTOG and TRGTOL both walk, for each partner task, the
+! latitudes they share with that task and the points within them, in the same order,
+! so one table serves both. It depends only on the decomposition and is built once in
+! SUMP_TRANS, which keeps it off the per-call mapping path.
+! KF_FS is unknown at setup, so the term it scales is kept apart and the kernels form
+! KF_FS*NGP_A + NGP_B. NGP_OFFSET(JROC) is the offset of task JROC's first point, so
+! its point count is NGP_OFFSET(JROC+1)-NGP_OFFSET(JROC).
+INTEGER(KIND=JPIM), ALLOCATABLE :: NGP_OFFSET(:) ! (NPROC+1)
+INTEGER(KIND=JPIM), ALLOCATABLE :: NGP_A(:)      ! D%NSTAGTF(IGLL), scaled by KF_FS
+INTEGER(KIND=JPIM), ALLOCATABLE :: NGP_B(:)      ! (D%NSTA(IGL,ISETB)-1)+(JL-1)
+INTEGER(KIND=JPIM), ALLOCATABLE :: NGP_STRIDE(:) ! distance between two layers
+
 END TYPE DISTR_TYPE
 
 TYPE(DISTR_TYPE),ALLOCATABLE,TARGET :: DISTR_RESOL(:)
