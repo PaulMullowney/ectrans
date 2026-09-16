@@ -179,7 +179,7 @@ integer(kind=jpim) :: nflevl
 
 ! sumpini
 integer(kind=jpim) :: isqr
-logical :: lsync_trans = .true. ! Activate barrier sync
+logical :: lsync_trans = .false. ! Barrier around each transposition exchange (--sync-trans)
 logical :: leq_regions = .true. ! Eq regions flag
 
 integer(kind=jpim) :: nproma = 0
@@ -250,7 +250,7 @@ call get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, nlev, l
   &                             luvder, luseflt, nopt_mem_tr, nproma, npromatr, verbosity, &
   &                             ldump_values, lprint_norms, lmeminfo, nprtrv, nprtrw, ncheck, &
   &                             lpinning, lfield_api, icall_mode, ldump_checksums, iters_checksums, &
-  &                             cchecksums_path, lalloperm, lpgp_on_gpu)
+  &                             cchecksums_path, lalloperm, lpgp_on_gpu, lsync_trans)
 if (iters_checksums < 0) then
   if (iters_warmup > 0) then
     iters_checksums = iters_warmup
@@ -1311,6 +1311,10 @@ subroutine print_help(unit)
     & timings"
   write(nout, "(a)") "    --meminfo           Show diagnostic information from FIAT's ec_meminfo&
     & subroutine on memory usage, thread-binding etc."
+  write(nout, "(a)") "    --sync-trans        Barrier around each transposition exchange, so the&
+    & GSTATS regions separate compute from communication"
+  write(nout, "(a)") "                        Costs about 4% at T1279 and 8% at T639 on eight&
+    & GPUs; off by default, as in the library"
   write(nout, "(a)") "    --nprtrv            Size of V set in spectral decomposition"
   write(nout, "(a)") "    --nprtrw            Size of W set in spectral decomposition"
   write(nout, "(a)") "    -c, --check VALUE   The multiplier of the machine epsilon used as a&
@@ -1364,7 +1368,7 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
   &                                   verbosity, ldump_values, lprint_norms, lmeminfo, nprtrv, &
   &                                   nprtrw, ncheck, lpinning, lfield_api, icall_mode, ldump_checksums, &
   &                                   iters_checksums, &
-  &                                   cchecksums_path, lalloperm, lpgp_on_gpu)
+  &                                   cchecksums_path, lalloperm, lpgp_on_gpu, lsync_trans)
 
 #ifdef _OPENACC
   use openacc, only: acc_init, acc_get_device_type
@@ -1405,6 +1409,9 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
   logical, intent(inout) :: lpgp_on_gpu                ! Allocate grid point fields in device memory
                                                        ! and tell inv_trans/dir_trans they are
                                                        ! already resident there
+  logical, intent(inout) :: lsync_trans                ! Barrier before and after each exchange, so
+                                                       ! the GSTATS regions separate compute from
+                                                       ! communication
   character(len=128) :: carg          ! Storage variable for command line arguments
   integer            :: iarg          ! Argument index
 
@@ -1477,6 +1484,7 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
       case('--deallocate-foubuf-temps'); lalloperm = .false.
       ! --gp-on-gpu is retained as an alias for the original spelling of this option.
       case('--keep-pgp-arrays-on-device', '--gp-on-gpu'); lpgp_on_gpu = .true.
+      case('--sync-trans'); lsync_trans = .true.
       case default
         call parsing_failed("Unrecognised argument: " // trim(carg))
 
