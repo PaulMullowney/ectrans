@@ -624,58 +624,6 @@ CONTAINS
     !$ACC DATA COPYIN(IFLDA) ASYNC(1)
 #endif
 
-    ! Copy local contribution
-    IF(LLOCAL_CONTRIBUTION) THEN
-
-      CALL GSTATS(1604,0)
-      CALL GSTATS(450,0)
-
-      IRECV_WSET_OFFSET_V = IRECV_WSET_OFFSET(MYSETW)
-      IRECV_WSET_SIZE_V = IRECV_WSET_SIZE(MYSETW)
-      IGP_V = D%NGP_OFFSET(MYPROC)
-      ASSOCIATE(D_NGP_A=>D%NGP_A, D_NGP_B=>D%NGP_B, D_NGP_STRIDE=>D%NGP_STRIDE)
-      IF (PRESENT(PGP)) THEN
-#ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) ECTRANS_OMP_DEFAULT_CLAUSE &
-        !$OMP& PRIVATE(JK,JBLK,IFLD,IPOS) &
-        !$OMP& SHARED(IFLDA,PGP,D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
-        !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_REAL) &
-        !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
-        !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,IRECV_WSET_SIZE_V) &
-        !$OMP& FIRSTPRIVATE(NPROMA,IRECV_WSET_OFFSET_V,IGP_V)
-#endif
-#ifdef ACCGPU
-        !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,IPOS) &
-        !$ACC&         PRESENT(D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
-        !$ACC&         FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,IRECV_WSET_OFFSET_V, &
-        !$ACC&         IGP_V,NPROMA) ASYNC(1)
-#endif
-        DO JFLD=1,KF_FS
-          DO JL=1,IRECV_WSET_SIZE_V
-            JK = MOD(IRECV_WSET_OFFSET_V+JL-1,NPROMA)+1
-            JBLK = (IRECV_WSET_OFFSET_V+JL-1)/NPROMA+1
-            IFLD = IFLDA(JFLD,1)
-            IPOS = 1_JPIB*KF_FS*D_NGP_A(IGP_V+JL)+D_NGP_B(IGP_V+JL) &
-                & +(JFLD-1)*D_NGP_STRIDE(IGP_V+JL)+1
-            PGP(JK,IFLD,JBLK) = PREEL_REAL(IPOS)
-          ENDDO
-        ENDDO
-      ELSE
-        CALL TRLTOG_LOCAL_CONTRIB(ZPREEL_C(1),SIZE(PREEL_REAL,KIND=JPIB), &
-          &                       IFLDA,SIZE(IFLDA,1),SIZE(IFLDA,2), &
-          &                       IGP_OFFSETS,KF_GP, &
-          &                       D_NGP_A,D_NGP_B,D_NGP_STRIDE,SIZE(D_NGP_A), &
-          &                       PGPUV,IUV1,IUV2,IUV3,IUV4, &
-          &                       PGP2,IG21,IG22,IG23, &
-          &                       PGP3A,I3A1,I3A2,I3A3,I3A4, &
-          &                       PGP3B,I3B1,I3B2,I3B3,I3B4, &
-          &                       KF_FS,IRECV_WSET_SIZE_V,IRECV_WSET_OFFSET_V,IGP_V,NPROMA)
-      ENDIF
-      END ASSOCIATE
-      CALL GSTATS(450,1)
-      CALL GSTATS(1604,1)
-    ENDIF
-
     ALLOCATE(ICOMBUFS_OFFSET(ISEND_COUNTS+1))
     ICOMBUFS_OFFSET(1) = 0
     DO JROC=1,ISEND_COUNTS
@@ -721,6 +669,11 @@ CONTAINS
         &                   KF_FS,ILEN,IGP_V,ICOMBUFS_OFFSET_V)
     ENDDO
     END ASSOCIATE
+#ifdef OMPGPU
+    ! One pack per destination, each NOWAIT so they can occupy the device together. They all
+    ! have to retire before the sends below read ZCOMBUFS.
+    !$OMP TASKWAIT
+#endif
     CALL GSTATS(451,1)
     CALL GSTATS(1605,1)
 #ifdef ACCGPU
@@ -805,12 +758,77 @@ CONTAINS
 
     CALL GSTATS(452,1)
 
+    ! Copy local contribution. This has to stay between the posts above and the wait below:
+    ! it only reads PREEL_REAL and writes the task's own latitudes of the gridpoint arrays,
+    ! so it touches neither ZCOMBUFS nor ZCOMBUFR and can run on the device while the
+    ! exchange is in flight. TRGTOL is arranged the same way. The kernel is launched
+    ! asynchronously (NOWAIT under OMPGPU, ASYNC(1) under ACCGPU) because the host has to
+    ! reach MPL_WAIT to make UCX progress: a blocking launch here just delays the transfers.
+    IF(LLOCAL_CONTRIBUTION) THEN
+
+      CALL GSTATS(1604,0)
+      CALL GSTATS(450,0)
+
+      IRECV_WSET_OFFSET_V = IRECV_WSET_OFFSET(MYSETW)
+      IRECV_WSET_SIZE_V = IRECV_WSET_SIZE(MYSETW)
+      IGP_V = D%NGP_OFFSET(MYPROC)
+      ASSOCIATE(D_NGP_A=>D%NGP_A, D_NGP_B=>D%NGP_B, D_NGP_STRIDE=>D%NGP_STRIDE)
+      IF (PRESENT(PGP)) THEN
+#ifdef OMPGPU
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) ECTRANS_OMP_DEFAULT_CLAUSE &
+        !$OMP& PRIVATE(JK,JBLK,IFLD,IPOS) &
+        !$OMP& SHARED(IFLDA,PGP,D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+        !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_REAL) &
+        !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+        !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,IRECV_WSET_SIZE_V) &
+        !$OMP& FIRSTPRIVATE(NPROMA,IRECV_WSET_OFFSET_V,IGP_V) &
+        !$OMP& NOWAIT
+#endif
+#ifdef ACCGPU
+        !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,IPOS) &
+        !$ACC&         PRESENT(D_NGP_A,D_NGP_B,D_NGP_STRIDE) &
+        !$ACC&         FIRSTPRIVATE(KF_FS,IRECV_WSET_SIZE_V,IRECV_WSET_OFFSET_V, &
+        !$ACC&         IGP_V,NPROMA) ASYNC(1)
+#endif
+        DO JFLD=1,KF_FS
+          DO JL=1,IRECV_WSET_SIZE_V
+            JK = MOD(IRECV_WSET_OFFSET_V+JL-1,NPROMA)+1
+            JBLK = (IRECV_WSET_OFFSET_V+JL-1)/NPROMA+1
+            IFLD = IFLDA(JFLD,1)
+            IPOS = 1_JPIB*KF_FS*D_NGP_A(IGP_V+JL)+D_NGP_B(IGP_V+JL) &
+                & +(JFLD-1)*D_NGP_STRIDE(IGP_V+JL)+1
+            PGP(JK,IFLD,JBLK) = PREEL_REAL(IPOS)
+          ENDDO
+        ENDDO
+      ELSE
+        CALL TRLTOG_LOCAL_CONTRIB(ZPREEL_C(1),SIZE(PREEL_REAL,KIND=JPIB), &
+          &                       IFLDA,SIZE(IFLDA,1),SIZE(IFLDA,2), &
+          &                       IGP_OFFSETS,KF_GP, &
+          &                       D_NGP_A,D_NGP_B,D_NGP_STRIDE,SIZE(D_NGP_A), &
+          &                       PGPUV,IUV1,IUV2,IUV3,IUV4, &
+          &                       PGP2,IG21,IG22,IG23, &
+          &                       PGP3A,I3A1,I3A2,I3A3,I3A4, &
+          &                       PGP3B,I3B1,I3B2,I3B3,I3B4, &
+          &                       KF_FS,IRECV_WSET_SIZE_V,IRECV_WSET_OFFSET_V,IGP_V,NPROMA)
+      ENDIF
+      END ASSOCIATE
+      CALL GSTATS(450,1)
+      CALL GSTATS(1604,1)
+    ENDIF
+
     CALL GSTATS(453,0)
     IF(IR > 0) THEN
       CALL MPL_WAIT(KREQUEST=IREQ(1:IR), &
       & CDSTRING='TRLTOG: WAIT FOR SENDS AND RECEIVES')
     ENDIF
     CALL GSTATS(453,1)
+#ifdef OMPGPU
+    ! Join the local contribution launched before the wait. Whatever of it overlapped the
+    ! exchange is charged to counter 453 rather than 450.
+    CALL GSTATS(458,0)
+    !$OMP TASKWAIT
+    CALL GSTATS(458,1)
+#endif
 
 #ifdef USE_GPU_AWARE_MPI
 #ifdef ACCGPU
@@ -862,7 +880,8 @@ CONTAINS
         !$OMP& PRIVATE(JK,JBLK,IFLD,JI) &
         !$OMP& SHARED(IFLDA,PGP) ECTRANS_DEVICE_ADDR_CLAUSE(ZCOMBUFR) &
         !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V) &
-        !$OMP& FIRSTPRIVATE(NPROMA,IRECV_WSET_OFFSET_V,ICOMBUFR_OFFSET_V,INR)
+        !$OMP& FIRSTPRIVATE(NPROMA,IRECV_WSET_OFFSET_V,ICOMBUFR_OFFSET_V,INR) &
+        !$OMP& NOWAIT
 #endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(NONE) PRIVATE(JK,JBLK,IFLD,JI) &
@@ -891,6 +910,9 @@ CONTAINS
       ENDIF
     ENDDO
 #ifdef OMPGPU
+    ! One unpack per source, each NOWAIT. They write disjoint field/latitude slices of the
+    ! gridpoint arrays, so they only have to be joined before those arrays are handed back.
+    !$OMP TASKWAIT
 #endif
 #ifdef ACCGPU
     !$ACC WAIT(1)
@@ -1025,7 +1047,8 @@ CONTAINS
     !$OMP& SHARED(KNGP_A,KNGP_B,KNGP_STRIDE) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_REAL,ZCOMBUFS) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KNGP_A,KNGP_B,KNGP_STRIDE) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KLEN) FIRSTPRIVATE(KGP_V,KCOMBUFS_OFFSET)
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KLEN) FIRSTPRIVATE(KGP_V,KCOMBUFS_OFFSET) &
+    !$OMP& NOWAIT
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP DEFAULT(NONE) PRIVATE(IPOS) &
@@ -1084,7 +1107,8 @@ CONTAINS
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD_COUNT,KWSET_SIZE) &
     !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KCOMBUFR_OFFSET,KNR) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZCOMBUFR) &
-    !$OMP& MAP(ALLOC:PGPUV,PGP2,PGP3A,PGP3B)
+    !$OMP& MAP(ALLOC:PGPUV,PGP2,PGP3A,PGP3B) &
+    !$OMP& NOWAIT
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(PRESENT) PRIVATE(JK,JBLK,IFLD,JI) &
@@ -1155,7 +1179,8 @@ CONTAINS
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KWSET_SIZE) &
     !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KGP_V) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_REAL) &
-    !$OMP& MAP(ALLOC:PGPUV,PGP2,PGP3A,PGP3B)
+    !$OMP& MAP(ALLOC:PGPUV,PGP2,PGP3A,PGP3B) &
+    !$OMP& NOWAIT
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(PRESENT) PRIVATE(JK,JBLK,IFLD,IPOS) &

@@ -2288,6 +2288,7 @@ subroutine gstats_labels
   call gstats_label(452, '   ', 'TRLTOG MPI     - post recv/send')
   call gstats_label(453, '   ', 'TRLTOG MPI     - wait for exchange')
   call gstats_label(454, '   ', 'TRLTOG kernel  - unpack recv buffer')
+  call gstats_label(458, '   ', 'TRLTOG kernel  - join local contrib')
   call gstats_label(460, '   ', 'TRGTOL kernel  - pack send buffer')
   call gstats_label(461, '   ', 'TRGTOL MPI     - post recv/send')
   call gstats_label(462, '   ', 'TRGTOL kernel  - local contribution')
