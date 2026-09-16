@@ -413,6 +413,22 @@ if (verbosity >= 1 .and. myproc == 1) then
 endif
 call allocator%set_pinning(lpinning)
 
+! Grid point fields in device memory are unreachable from the host, so every option that
+! reads or writes them outside the transforms is incompatible with it.
+! The --dump-values and --dump-checksums combinations are rejected during argument parsing.
+if (lpgp_on_gpu) then
+  if (VERSION /= "gpu") then
+    call abor1('ectrans_benchmark: --keep-pgp-arrays-on-device requires the GPU version')
+  endif
+  if (.not. allocator%device_resident_supported()) then
+    call abor1('ectrans_benchmark: --keep-pgp-arrays-on-device requires an OpenMP offload or &
+      &OpenACC build')
+  endif
+  if (lfield_api) then
+    call abor1('ectrans_benchmark: --keep-pgp-arrays-on-device is incompatible with --field-api')
+  endif
+endif
+
 !===================================================================================================
 ! Setup gstats
 !===================================================================================================
@@ -490,6 +506,7 @@ if (verbosity >= 0 .and. myproc == 1) then
   write(nout,'("luvder     ",l1)') luvder
   write(nout,'("lfield_api ",l1)') lfield_api
   write(nout,'("lalloperm  ",l1)') lalloperm
+  write(nout,'("lpgp_on_gpu ",l1)') lpgp_on_gpu
   write(nout,'(" ")')
   write(nout,'(a)') '======= End of runtime parameters ======='
   write(nout,'(" ")')
@@ -580,7 +597,10 @@ if (lscders) then
   inum_sc_2d_fields = inum_sc_2d_fields * 3
 endif
 
-! Finally, allocate grid point arrays
+! Finally, allocate grid point arrays. Only these become device-resident when PGP arrays are
+! kept on the device; the spectral arrays above stay on the host because the benchmark reads
+! them for the norms.
+call allocator%set_device_resident(lpgp_on_gpu)
 if (icall_mode == 1) then
   itotal_fields = nflevg * (inum_wind_fields + inum_sc_3d_fields) + inum_sc_2d_fields
   call allocator%allocate('zgp', zgp, [nproma,itotal_fields,ngpblks])
@@ -589,6 +609,7 @@ else
   call allocator%allocate('zgp3a', zgp3a, [nproma,nflevg,inum_sc_3d_fields,ngpblks])
   call allocator%allocate('zgp2', zgp2, [nproma,inum_sc_2d_fields,ngpblks])
 endif
+call allocator%set_device_resident(.false.)
 
 #if USE_FIELD_API
 if (lfield_api) then
@@ -1095,6 +1116,7 @@ else
   call allocator%deallocate('zspsc2', zspsc2)
 endif
 
+call allocator%set_device_resident(lpgp_on_gpu)
 if (icall_mode == 1) then
   call allocator%deallocate('zgp', zgp)
 else
@@ -1102,6 +1124,7 @@ else
   call allocator%deallocate('zgp3a', zgp3a)
   call allocator%deallocate('zgp2', zgp2)
 endif
+call allocator%set_device_resident(.false.)
 
 !===================================================================================================
 
@@ -1304,8 +1327,13 @@ subroutine print_help(unit)
    & https://sites.ecmwf.int/docs/ectrans/page/api.html for more information"
   write(nout, "(a)") "    --deallocate-foubuf-temps Enable deallocation of temporary Fourier-space&
    & buffers (default = off, when enabled equivalent to LALLOPERM=.FALSE.)"
-  write(nout, "(a)") "    --keep-pgp-arrays-on-device  Keep PGP arrays on the GPU (default = off;&
-   & cannot be enabled with --dump-values nor --dump-checksums)"
+  write(nout, "(a)") "    --keep-pgp-arrays-on-device  Allocate grid point fields in device memory&
+   & and pass LPGP_ON_GPU to the transforms"
+  write(nout, "(a)") "                        (default = off). Removes the host/device transfers&
+   & in TRGTOL and TRLTOG. GPU builds only"
+  write(nout, "(a)") "                        (OpenMP offload or OpenACC), and incompatible with&
+   & --field-api, --dump-values and"
+  write(nout, "(a)") "                        --dump-checksums. Alias: --gp-on-gpu"
   write(nout, "(a)") ""
   write(nout, "(a)") "DEBUGGING"
   write(nout, "(a)") "    --dump-values             Output gridpoint fields in unformatted binary file"
@@ -1374,7 +1402,9 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
 
   character(len=1024), intent(inout) :: cchecksums_path ! path to export checksum files
   logical, intent(inout) :: lalloperm                  ! keep FOUBUF & FOUBUF_IN allocated
-  logical, intent(inout) :: lpgp_on_gpu                ! keep PGP arrays on the GPU
+  logical, intent(inout) :: lpgp_on_gpu                ! Allocate grid point fields in device memory
+                                                       ! and tell inv_trans/dir_trans they are
+                                                       ! already resident there
   character(len=128) :: carg          ! Storage variable for command line arguments
   integer            :: iarg          ! Argument index
 
@@ -1445,7 +1475,8 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
             call parsing_failed("Invalid argument for --callmode: must be 1 or 2")
           end if
       case('--deallocate-foubuf-temps'); lalloperm = .false.
-      case('--keep-pgp-arrays-on-device'); lpgp_on_gpu = .true.
+      ! --gp-on-gpu is retained as an alias for the original spelling of this option.
+      case('--keep-pgp-arrays-on-device', '--gp-on-gpu'); lpgp_on_gpu = .true.
       case default
         call parsing_failed("Unrecognised argument: " // trim(carg))
 

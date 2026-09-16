@@ -41,7 +41,8 @@ foreach( program ectrans-benchmark )
 
   if( HAVE_GPU )
     # ${GPU_OFFLOAD}GPU matches what trans_gpu is built with, so ectrans_device can bind the
-    # offload runtime's default device and not just the HIP/CUDA one.
+    # offload runtime's default device and not just the HIP/CUDA one, and ectrans_memory can
+    # tell which offload model it is compiled for and offer device-resident allocation.
     list( APPEND util_PRIVATE_DEFINITIONS
       $<${HAVE_CUDA}:CUDA>
       $<${HAVE_HIP}:HIP>
