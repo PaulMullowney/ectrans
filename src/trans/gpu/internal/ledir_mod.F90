@@ -407,19 +407,28 @@ CONTAINS
     INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
     INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
 
-    INTEGER(KIND=JPIM) :: KM, KMLOC, IA, JF, J
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IA, JF, J, IJMAX
+
+    ! J joins the parallel space instead of being walked serially. Its trip count is
+    ! (KNSMAX-KM+2)/2, so it shrinks as m grows: collapsed over (KMLOC,JF) only, a team that
+    ! draws high-m rows finishes at once while one that draws m=0 grinds through KNSMAX/2
+    ! iterations, and the kernel runs at the pace of the slowest team. Extending the collapse
+    ! over the full rectangle and guarding the short rows trades ~50% idle threads, which
+    ! cost a predicated exit each, for a balanced grid -- and raises the grid from KNUMP*2*KF_FS
+    ! to KNUMP*IJMAX*2*KF_FS, which is what fills the device in the first place.
+    IJMAX = (KNSMAX+2)/2
 
 #ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IA) ECTRANS_OMP_DEFAULT_CLAUSE &
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) PRIVATE(KM,IA) ECTRANS_OMP_DEFAULT_CLAUSE &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUT,ZOUT0,POA1) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KNUMP) &
-    !$OMP& FIRSTPRIVATE(KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0)
+    !$OMP& FIRSTPRIVATE(KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0,IJMAX)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) DEFAULT(NONE) &
+    !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IA) DEFAULT(NONE) &
     !$ACC& PRESENT(POA1,ZOUT,ZOUT0,KMYMS,KOFFSETS_GEMM2) &
-    !$ACC& FIRSTPRIVATE(KF_FS,KNUMP,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0) &
+    !$ACC& FIRSTPRIVATE(KF_FS,KNUMP,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0,IJMAX) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -427,24 +436,19 @@ CONTAINS
 #endif
 #endif
     DO KMLOC=1,KNUMP
-      DO JF=1,2*KF_FS
-        KM = KMYMS(KMLOC)
-        IA  = 1+MOD(KNTMAX-KM+2,2)
-        IF (KM /= 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX-KM+2)/2
-            POA1(JF,IA+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*KOUT_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KOUT_STRIDES0)
-          ENDDO
-        ELSEIF (MOD(JF-1,2) == 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX+2)/2
+      DO J=1,IJMAX
+        DO JF=1,2*KF_FS
+          KM = KMYMS(KMLOC)
+          IA  = 1+MOD(KNTMAX-KM+2,2)
+          IF (KM /= 0) THEN
+            IF (J <= (KNSMAX-KM+2)/2) THEN
+              POA1(JF,IA+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*KOUT_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KOUT_STRIDES0)
+            ENDIF
+          ELSEIF (MOD(JF-1,2) == 0) THEN
+            ! KM=0 runs the full (KNSMAX+2)/2, which is IJMAX, so it needs no guard.
             POA1(JF,IA+1+(J-1)*2,KMLOC) = ZOUT0((JF-1)/2+1+(J-1)*KOUT0_STRIDES0)
-          ENDDO
-        ENDIF
+          ENDIF
+        ENDDO
       ENDDO
     ENDDO
   END SUBROUTINE LEDIR_STORE_ANTISYM
@@ -464,19 +468,23 @@ CONTAINS
     INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
     INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
 
-    INTEGER(KIND=JPIM) :: KM, KMLOC, IS, JF, J
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IS, JF, J, IJMAX
+
+    ! J joins the parallel space, as in LEDIR_STORE_ANTISYM above. The symmetric half runs
+    ! to (KNSMAX-KM+3)/2, so the rectangle is one row taller.
+    IJMAX = (KNSMAX+3)/2
 
 #ifdef OMPGPU
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) PRIVATE(KM,IS) &
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) PRIVATE(KM,IS) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUT,ZOUT0,POA1) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KNUMP) &
-    !$OMP& FIRSTPRIVATE(KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0)
+    !$OMP& FIRSTPRIVATE(KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0,IJMAX)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS,J) DEFAULT(NONE) &
+    !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IS) DEFAULT(NONE) &
     !$ACC& PRESENT(POA1,ZOUT,ZOUT0,KMYMS,KOFFSETS_GEMM2) &
-    !$ACC& FIRSTPRIVATE(KF_FS,KNUMP,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0) &
+    !$ACC& FIRSTPRIVATE(KF_FS,KNUMP,KNSMAX,KNTMAX,KOUT_STRIDES0,KOUT0_STRIDES0,IJMAX) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -484,24 +492,19 @@ CONTAINS
 #endif
 #endif
     DO KMLOC=1,KNUMP
-      DO JF=1,2*KF_FS
-        KM = KMYMS(KMLOC)
-        IS  = 1+MOD(KNTMAX-KM+1,2)
-        IF (KM /= 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX-KM+3)/2
-            POA1(JF,IS+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*KOUT_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KOUT_STRIDES0)
-          ENDDO
-        ELSEIF (MOD(JF-1,2) == 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX+3)/2
+      DO J=1,IJMAX
+        DO JF=1,2*KF_FS
+          KM = KMYMS(KMLOC)
+          IS  = 1+MOD(KNTMAX-KM+1,2)
+          IF (KM /= 0) THEN
+            IF (J <= (KNSMAX-KM+3)/2) THEN
+              POA1(JF,IS+1+(J-1)*2,KMLOC) = ZOUT(JF+(J-1)*KOUT_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KOUT_STRIDES0)
+            ENDIF
+          ELSEIF (MOD(JF-1,2) == 0) THEN
+            ! KM=0 runs the full (KNSMAX+3)/2, which is IJMAX, so it needs no guard.
             POA1(JF,IS+1+(J-1)*2,KMLOC) = ZOUT0((JF-1)/2+1+(J-1)*KOUT0_STRIDES0)
-          ENDDO
-        ENDIF
+          ENDIF
+        ENDDO
       ENDDO
     ENDDO
   END SUBROUTINE LEDIR_STORE_SYM
