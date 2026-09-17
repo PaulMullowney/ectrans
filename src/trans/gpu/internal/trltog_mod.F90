@@ -12,6 +12,7 @@
 
 MODULE TRLTOG_MOD
   USE BUFFERED_ALLOCATOR_MOD, ONLY: ALLOCATION_RESERVATION_HANDLE
+  USE PARKIND_ECTRANS,        ONLY: JPIM
   IMPLICIT NONE
 
   PRIVATE
@@ -20,6 +21,9 @@ MODULE TRLTOG_MOD
   TYPE TRLTOG_HANDLE
     TYPE(ALLOCATION_RESERVATION_HANDLE) :: HCOMBUFR_AND_COMBUFS
   END TYPE
+
+  ! Fields walked serially by one thread in the packing kernels. See TRLTOG_PACK_SEND.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 16
 CONTAINS
   FUNCTION PREPARE_TRLTOG(ALLOCATOR,KF_FS,KF_GP) RESULT(HTRLTOG)
     USE PARKIND_ECTRANS,        ONLY: JPIM, JPRBT, JPIB
@@ -1038,28 +1042,47 @@ CONTAINS
     REAL(KIND=JPRBT),   INTENT(INOUT) :: ZCOMBUFS(KCOMBUFS)
     INTEGER(KIND=JPIM), INTENT(IN)    :: KNGP_A(KNGP), KNGP_B(KNGP), KNGP_STRIDE(KNGP)
 
-    INTEGER(KIND=JPIM) :: JFLD, JL
+    INTEGER(KIND=JPIM) :: JFLD, JL, JB, INB, ISTR
     INTEGER(KIND=JPIB) :: IPOS
+
+    ! The field loop is tiled rather than collapsed outright. Collapsing both loops gives
+    ! every thread exactly one element: three index-table loads, an address, one load, one
+    ! store, exit. There is nothing to overlap the memory latency with, and the kernel ends
+    ! up at a fraction of every hardware ceiling at once rather than saturating any of them.
+    ! Walking ITILE fields per thread puts that many independent loads in flight and lets
+    ! the table lookups be hoisted, while keeping JL as the fast index so the loads and
+    ! stores stay coalesced. Measured 1.66x on a standalone reproduction of this loop at
+    ! MI355X T1279 sizes, flat from ITILE 8 to 128 (see kernel_studies/packbench.F90).
+    INB = (KF_FS+ITILE-1)/ITILE
 
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) ECTRANS_OMP_DEFAULT_CLAUSE &
-    !$OMP& PRIVATE(IPOS) &
+    !$OMP& PRIVATE(IPOS,ISTR,JFLD) &
     !$OMP& SHARED(KNGP_A,KNGP_B,KNGP_STRIDE) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_REAL,ZCOMBUFS) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KNGP_A,KNGP_B,KNGP_STRIDE) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KLEN) FIRSTPRIVATE(KGP_V,KCOMBUFS_OFFSET) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KLEN) &
+    !$OMP& FIRSTPRIVATE(KGP_V,KCOMBUFS_OFFSET,INB) &
     !$OMP& NOWAIT
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP DEFAULT(NONE) PRIVATE(IPOS) &
+    !$ACC PARALLEL LOOP DEFAULT(NONE) PRIVATE(IPOS,ISTR,JFLD) &
     !$ACC&              PRESENT(KNGP_A,KNGP_B,KNGP_STRIDE,PREEL_REAL,ZCOMBUFS) &
-    !$ACC&              FIRSTPRIVATE(KF_FS,KLEN,KGP_V,KCOMBUFS_OFFSET) COLLAPSE(2) ASYNC(1)
+    !$ACC&              FIRSTPRIVATE(KF_FS,KLEN,KGP_V,KCOMBUFS_OFFSET,INB) &
+    !$ACC&              COLLAPSE(2) ASYNC(1)
 #endif
-    DO JFLD=1,KF_FS
+    DO JB=1,INB
       DO JL=1,KLEN
+        ISTR = KNGP_STRIDE(KGP_V+JL)
         IPOS = 1_JPIB*KF_FS*KNGP_A(KGP_V+JL)+KNGP_B(KGP_V+JL) &
-            & +(JFLD-1)*KNGP_STRIDE(KGP_V+JL)+1
-        ZCOMBUFS(KCOMBUFS_OFFSET+(JFLD-1)*KLEN+JL) = PREEL_REAL(IPOS)
+            & +INT((JB-1)*ITILE,JPIB)*ISTR+1
+#ifdef ACCGPU
+        !$ACC LOOP SEQ
+#endif
+        DO JFLD=(JB-1)*ITILE+1,MIN(JB*ITILE,KF_FS)
+          ZCOMBUFS(KCOMBUFS_OFFSET+(JFLD-1)*KLEN+JL) = PREEL_REAL(IPOS)
+          IPOS = IPOS+ISTR
+        ENDDO
       ENDDO
     ENDDO
   END SUBROUTINE TRLTOG_PACK_SEND
@@ -1100,6 +1123,30 @@ CONTAINS
     INTEGER(KIND=JPIM) :: JFLD, JL, JK, JBLK, IFLD
     INTEGER(KIND=JPIB) :: JI
 
+    ! Deliberately NOT tiled, unlike TRLTOG_PACK_SEND. Tiling hoists the modulo and the
+    ! integer divide that produce JK and JBLK, but consecutive fields land at unrelated
+    ! KGP_OFFSETS slices of four different gridpoint arrays, so a thread's tile scatters
+    ! its stores across memory instead of walking a constant stride. Measured 3.019 ->
+    ! 3.425 ms at T1279 on 8 ranks: the lost locality costs more than the divide saves.
+    !
+    ! Nor is the divide worth removing on its own. This is the most expensive OpenMP kernel
+    ! in the library and it moves the same HBM bytes as TRLTOG_PACK_SEND (1.42 vs 1.39 GB
+    ! per dispatch at T1279 on 8 ranks) in 1.49x the time, with 3.5x the VALU and 14.5x the
+    ! SALU instructions, 1.93x the L1 traffic, and rocprof naming KERNEL_COMPUTE rather than
+    ! HBM_BW as its limiter. That reads like an arithmetic problem, but it is not: skipping
+    ! the divide and modulo entirely on the path where the wave-set cannot cross an NPROMA
+    ! boundary -- roughly 20 VALU ops per element -- bought only 3% here (165.4 -> 160.1 ms
+    ! per rank over 20 iterations) and nothing at all in step time. The integer work issues
+    ! underneath the outstanding loads rather than adding to them.
+    !
+    ! What is left on the critical path is the dependent chain KFLDA(JFLD) -> IFLD ->
+    ! KGP_OFFSETS(IFLD,1) -> branch -> KGP_OFFSETS(IFLD,2:3) -> store: three serialised
+    ! round trips per element for a single 4-byte store, all of them invariant in JL and so
+    ! re-fetched for every element of every field. The vL1d-to-HBM byte ratio of 4.30,
+    ! against 2.27 for TRLTOG_PACK_SEND, is that redundancy. Shortening the chain is the
+    ! open lead, either with a per-field descriptor table indexed by JFLD directly so the
+    ! loads are independent, or by hoisting the invariants to team scope, which needs the
+    ! split TARGET TEAMS DISTRIBUTE / PARALLEL DO form this compiler is not known to handle.
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) ECTRANS_OMP_DEFAULT_CLAUSE &
     !$OMP& PRIVATE(JK,JBLK,IFLD,JI) &

@@ -28,6 +28,10 @@ MODULE TRLTOM_PACK_UNPACK
 
   INTEGER(KIND=JPIM) :: A = 8 !Alignment
 
+  ! Fields per thread in TRLTOM_UNPACK_KERNEL. Amortises the per-(KMLOC,JGL) invariant
+  ! loads over this many fields; see the comment at the kernel.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 4
+
 CONTAINS
   FUNCTION PREPARE_TRLTOM_PACK(ALLOCATOR, KF_FS) RESULT(HTRLTOM_PACK)
     USE PARKIND_ECTRANS,        ONLY: JPIM, JPRBT, JPIB
@@ -383,21 +387,39 @@ CONTAINS
     INTEGER(KIND=JPIM), INTENT(IN)    :: KNDGLU(0:KNSMAX)
     REAL(KIND=JPRD),    INTENT(IN)    :: PRW(KNDGNH_N), PRACTHE(KNDGNH_N)
 
-    INTEGER(KIND=JPIB) :: JF, OFFSET1, OFFSET2
-    INTEGER(KIND=JPIM) :: KM, ISL, IGLS, JGL, KMLOC
-    REAL(KIND=JPRBT) :: PAIA, PAIS
+    INTEGER(KIND=JPIB) :: JF, OFFSET1, OFFSET2, IOUT, IOUT0
+    INTEGER(KIND=JPIM) :: KM, ISL, IGLS, JGL, KMLOC, JFP, INJF
+    REAL(KIND=JPRBT) :: PAIA, PAIS, ZRW, ZRACTHE
+
+    ! Everything this kernel needs except the two PFOUBUF values is invariant in the field
+    ! index: KMYMS(KMLOC), KNDGLU(KM) behind it, both KNPNTGTB1 lookups, and the PRW and
+    ! PRACTHE weights. Collapsed over (KMLOC,JGL,JF) they are re-loaded for every one of the
+    ! 2*KF_FS fields, so of the eight memory operations per element only four do any work.
+    ! That is the 6.5:1 vL1d-to-HBM byte ratio the roofline reports, against 1.25:1 for the
+    ! saturated TRMTOL_UNPACK_KERNEL.
+    !
+    ! Strip-mining the field dimension fixes it, but which way round matters. Giving a thread
+    ! a contiguous tile of fields -- the shape used in TRLTOG_PACK_SEND -- would stride the
+    ! lanes apart and break the coalescing that makes PFOUBUF and PZINP* stream. Instead the
+    ! parallel index is the unit-stride component and the serial loop strides by the number
+    ! of parallel positions, so at every step of the inner loop consecutive lanes still touch
+    ! consecutive addresses, while each thread loads the invariants once and reuses them
+    ! across ITILE fields. The REAL() conversions of the JPRD weights get hoisted with them.
+    INJF = (2*KF_FS+ITILE-1)/ITILE
 
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) ECTRANS_OMP_DEFAULT_CLAUSE &
-    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,PAIA,PAIS) &
+    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,PAIA,PAIS,JF,ZRW,ZRACTHE,IOUT,IOUT0) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PFOUBUF,PZINPA,PZINPS,PZINPA0,PZINPS0) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM1,KNPNTGTB1,KNDGLU,PRW,PRACTHE) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS) FIRSTPRIVATE(KF_UV,KIN_STRIDES0,KIN0_STRIDES0)
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS) &
+    !$OMP& FIRSTPRIVATE(KF_UV,KIN_STRIDES0,KIN0_STRIDES0,INJF)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP DEFAULT(PRESENT) COLLAPSE(3) PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,JGL,PAIA,PAIS) &
+    !$ACC PARALLEL LOOP DEFAULT(PRESENT) COLLAPSE(3) &
+    !$ACC&              PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,JGL,PAIA,PAIS,JF,ZRW,ZRACTHE,IOUT,IOUT0) &
     !$ACC&              PRESENT(KMYMS,KOFFSETS_GEMM1,KNPNTGTB1,KNDGLU,PRW,PRACTHE) &
-    !$ACC&              FIRSTPRIVATE(KF_FS,KF_UV,KIN_STRIDES0,KIN0_STRIDES0) &
+    !$ACC&              FIRSTPRIVATE(KF_FS,KF_UV,KIN_STRIDES0,KIN0_STRIDES0,INJF) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -406,7 +428,7 @@ CONTAINS
 #endif
     DO KMLOC=1,KNUMP
       DO JGL=1,KNDGNH
-        DO JF=1,KF_FS*2
+        DO JFP=1,INJF
           KM = KMYMS(KMLOC)
           ISL = KNDGNH-KNDGLU(KM)+1
           IF (JGL >= ISL) THEN
@@ -414,21 +436,30 @@ CONTAINS
             IGLS = KNDGL+1-JGL
             OFFSET1 = 2_JPIB*KNPNTGTB1(KMLOC,JGL )*KF_FS
             OFFSET2 = 2_JPIB*KNPNTGTB1(KMLOC,IGLS)*KF_FS
-            PAIA = PFOUBUF(OFFSET1+JF)-PFOUBUF(OFFSET2+JF)
-            PAIS = PFOUBUF(OFFSET1+JF)+PFOUBUF(OFFSET2+JF)
-            IF (JF <= 4*KF_UV) THEN
-                ! Multiply in case of velocity
-              PAIA = PAIA*REAL(PRACTHE(JGL),JPRBT)
-              PAIS = PAIS*REAL(PRACTHE(JGL),JPRBT)
-            ENDIF
-            IF (KM /= 0) THEN
-              PZINPA(JF+(JGL-ISL)*KIN_STRIDES0+KIN_STRIDES0*KOFFSETS_GEMM1(KMLOC))=PAIA*REAL(PRW(JGL),JPRBT)
-              PZINPS(JF+(JGL-ISL)*KIN_STRIDES0+KIN_STRIDES0*KOFFSETS_GEMM1(KMLOC))=PAIS*REAL(PRW(JGL),JPRBT)
-            ELSEIF (MOD(JF-1,2) == 0) THEN
-              ! every other field is sufficient because Im(KM=0) == 0
-              PZINPA0((JF-1)/2+1+(JGL-1)*KIN0_STRIDES0)=PAIA*REAL(PRW(JGL),JPRBT)
-              PZINPS0((JF-1)/2+1+(JGL-1)*KIN0_STRIDES0)=PAIS*REAL(PRW(JGL),JPRBT)
-            ENDIF
+            ZRW = REAL(PRW(JGL),JPRBT)
+            ZRACTHE = REAL(PRACTHE(JGL),JPRBT)
+            IOUT = (JGL-ISL)*KIN_STRIDES0+KIN_STRIDES0*KOFFSETS_GEMM1(KMLOC)
+            IOUT0 = 1_JPIB+(JGL-1)*KIN0_STRIDES0
+#ifdef ACCGPU
+            !$ACC LOOP SEQ
+#endif
+            DO JF=JFP,2*KF_FS,INJF
+              PAIA = PFOUBUF(OFFSET1+JF)-PFOUBUF(OFFSET2+JF)
+              PAIS = PFOUBUF(OFFSET1+JF)+PFOUBUF(OFFSET2+JF)
+              IF (JF <= 4*KF_UV) THEN
+                  ! Multiply in case of velocity
+                PAIA = PAIA*ZRACTHE
+                PAIS = PAIS*ZRACTHE
+              ENDIF
+              IF (KM /= 0) THEN
+                PZINPA(JF+IOUT)=PAIA*ZRW
+                PZINPS(JF+IOUT)=PAIS*ZRW
+              ELSEIF (MOD(JF-1,2) == 0) THEN
+                ! every other field is sufficient because Im(KM=0) == 0
+                PZINPA0((JF-1)/2+IOUT0)=PAIA*ZRW
+                PZINPS0((JF-1)/2+IOUT0)=PAIS*ZRW
+              ENDIF
+            ENDDO
           ENDIF
         ENDDO
       ENDDO

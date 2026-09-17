@@ -10,6 +10,14 @@
 !
 
 MODULE UPDSPB_MOD
+  USE PARKIND_ECTRANS, ONLY: JPIM
+
+  IMPLICIT NONE
+
+  ! Fields walked serially by one thread in UPDSPB_UPDATE. Held to 2 so the strip-mined extent
+  ! stays at least one wavefront wide; see the comment in PRFI1B_EXTRACT in prfi1b_mod.F90.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 2
+
   CONTAINS
   SUBROUTINE UPDSPB(KFIELD,POA,PSPEC,KFLDPTR)
   
@@ -153,20 +161,32 @@ MODULE UPDSPB_MOD
   INTEGER(KIND=JPIM),INTENT(IN)  :: KNASM0(0:KNASM0_UB)
 
   INTEGER(KIND=JPIM) :: KM, KMLOC
-  INTEGER(KIND=JPIM) :: INM, JFLD, JN, IASM0
+  INTEGER(KIND=JPIM) :: INM, JFLD, JFP, INJF, JN, IASM0
+
+  ! Strip-mine the field loop. KM, the dependent IASM0 load and INM depend only on KMLOC and
+  ! JN, so collapsing the field loop outright makes every field redo them: two loads and the
+  ! address arithmetic per element where one store pair is useful. Walking ITILE fields
+  ! serially per thread does that work once per tile instead.
+  !
+  ! JFLD is unit-stride in both PSPEC(JFLD,...) and, through 2*JFLD, in POA(2*JFLD-1,...), so
+  ! the parallel index stays unit-stride and the serial loop strides by INJF, which keeps
+  ! consecutive lanes on consecutive addresses at every step. INJF must also stay at or above
+  ! the 64-lane wavefront, for the reason set out in PRFI1B_EXTRACT in prfi1b_mod.F90.
+  INJF = (KFIELD+ITILE-1)/ITILE
 
 ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
 ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
 #ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM) &
+  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM,JFLD) &
   !$OMP& SHARED(POA,PSPEC,KMYMS,KNASM0) &
   !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KNASM0) &
+  !$OMP& FIRSTPRIVATE(INJF) &
   !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD,KNUMP,KNTMAX)
 #endif
 #ifdef ACCGPU
-  !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM) DEFAULT(NONE) COPYIN(KFIELD) &
+  !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM,JFLD) DEFAULT(NONE) COPYIN(KFIELD) &
   !$ACC& PRESENT(POA,PSPEC,KMYMS,KNASM0) &
-  !$ACC& FIRSTPRIVATE(KNUMP,KNTMAX) &
+  !$ACC& FIRSTPRIVATE(KNUMP,KNTMAX,INJF) &
 #ifndef _CRAYFTN
   !$ACC& ASYNC(1)
 #else
@@ -175,20 +195,30 @@ MODULE UPDSPB_MOD
 #endif
   DO KMLOC=1,KNUMP
     DO JN=3,KNTMAX+3
-      DO JFLD=1,KFIELD
+      DO JFP=1,INJF
         KM = KMYMS(KMLOC)
         IASM0 = KNASM0(KM)
 
         IF(KM /= 0 .AND. JN <= KNTMAX+3-KM) THEN
         !(DO JN=3,KNTMAX+3-KM)
           INM = IASM0+((KNTMAX+3-JN)-KM)*2
-          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
-          PSPEC(JFLD,INM+1) = POA(2*JFLD  ,JN,KMLOC)
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO JFLD=JFP,KFIELD,INJF
+            PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
+            PSPEC(JFLD,INM+1) = POA(2*JFLD  ,JN,KMLOC)
+          ENDDO
         ELSEIF (KM == 0) THEN
           !(DO JN=3,KNTMAX+3)
           INM = IASM0+(KNTMAX+3-JN)*2
-          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
-          PSPEC(JFLD,INM+1) = 0.0_JPRBT
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO JFLD=JFP,KFIELD,INJF
+            PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
+            PSPEC(JFLD,INM+1) = 0.0_JPRBT
+          ENDDO
         END IF
       ENDDO
     ENDDO
