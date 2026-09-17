@@ -10,6 +10,15 @@
 !
 
 MODULE PRFI1B_MOD
+  USE PARKIND1, ONLY: JPIM
+
+  IMPLICIT NONE
+
+  ! Fields walked serially by one thread in PRFI1B_EXTRACT. Held to 2, not the 4 used by the
+  ! larger strip-mined kernels, because the strip-mined extent must stay at least one
+  ! wavefront wide. See the comment in PRFI1B_EXTRACT.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 2
+
   CONTAINS
   SUBROUTINE PRFI1B(PIA,PSPEC,KFIELDS,KDIM,KFLDPTR)
   
@@ -71,7 +80,7 @@ MODULE PRFI1B_MOD
   INTEGER(KIND=JPIM),INTENT(IN),OPTIONAL :: KFLDPTR(:)
   
   !     LOCAL INTEGER SCALARS
-  INTEGER(KIND=JPIM) :: INM, IR, JN, JFLD, IASM0
+  INTEGER(KIND=JPIM) :: INM, IR, JN, JFLD, JFP, INJF, IASM0
   
   !     ------------------------------------------------------------------
   
@@ -95,14 +104,16 @@ MODULE PRFI1B_MOD
 
     !loop over wavenumber
 
+    ! Strip-mine the field loop. INJF stays at least one wavefront wide; see the module comment.
+    INJF = (KFIELDS+ITILE-1)/ITILE
 #ifdef OMPGPU
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) &
-    !$OMP& PRIVATE(KM,IASM0,INM) &
-    !$OMP& SHARED(PIA,PSPEC) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELDS)
+    !$OMP& PRIVATE(KM,IASM0,INM,JFLD) &
+    !$OMP& SHARED(PIA,PSPEC) FIRSTPRIVATE(INJF) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELDS)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IASM0,INM) &
-    !$ACC FIRSTPRIVATE(KFIELDS,KDIM) &
+    !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IASM0,INM,JFLD) &
+    !$ACC FIRSTPRIVATE(KFIELDS,KDIM,INJF) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -111,20 +122,35 @@ MODULE PRFI1B_MOD
 #endif
     DO KMLOC=1,D_NUMP
       DO JN=0,R_NSMAX+3
-        DO JFLD=1,KFIELDS
+        DO JFP=1,INJF
           KM = D_MYMS(KMLOC)
 
           IF (JN <= 1) THEN
-              PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
-              PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+#ifdef ACCGPU
+              !$ACC LOOP SEQ
+#endif
+              DO JFLD=JFP,KFIELDS,INJF
+                PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
+                PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+              ENDDO
           ELSEIF (JN <= R_NSMAX+2-KM) THEN
               IASM0 = D_NASM0(KM)
               INM = IASM0+((R_NSMAX+2-JN)-KM)*2
-              PIA(2*JFLD-1,JN+1,KMLOC) = PSPEC(JFLD,INM  )
-              PIA(2*JFLD  ,JN+1,KMLOC) = PSPEC(JFLD,INM+1)
+#ifdef ACCGPU
+              !$ACC LOOP SEQ
+#endif
+              DO JFLD=JFP,KFIELDS,INJF
+                PIA(2*JFLD-1,JN+1,KMLOC) = PSPEC(JFLD,INM  )
+                PIA(2*JFLD  ,JN+1,KMLOC) = PSPEC(JFLD,INM+1)
+              ENDDO
           ELSEIF (JN <= R_NSMAX+3-KM) THEN
-              PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
-              PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+#ifdef ACCGPU
+              !$ACC LOOP SEQ
+#endif
+              DO JFLD=JFP,KFIELDS,INJF
+                PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
+                PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+              ENDDO
           ENDIF
           ENDDO
         ENDDO
