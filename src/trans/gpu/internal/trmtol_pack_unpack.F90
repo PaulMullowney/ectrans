@@ -11,6 +11,7 @@
 
 MODULE TRMTOL_PACK_UNPACK
   USE BUFFERED_ALLOCATOR_MOD, ONLY: ALLOCATION_RESERVATION_HANDLE
+  USE PARKIND_ECTRANS,        ONLY: JPIM
   IMPLICIT NONE
 
   PRIVATE
@@ -23,6 +24,10 @@ MODULE TRMTOL_PACK_UNPACK
   TYPE TRMTOL_UNPACK_HANDLE
     TYPE(ALLOCATION_RESERVATION_HANDLE) :: HREEL
   END TYPE
+
+  ! Fields per thread in TRMTOL_PACK_KERNEL. Amortises the per-(KMLOC,JGL) invariant loads
+  ! over this many fields; see the comment at the kernel.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 4
 
 CONTAINS
   FUNCTION PREPARE_TRMTOL_PACK(ALLOCATOR,KF_LEG) RESULT(HTRMTOL_PACK)
@@ -191,8 +196,17 @@ CONTAINS
     INTEGER(KIND=JPIM), INTENT(IN)  :: KNDGLU(0:KNSMAX)
 
     REAL(KIND=JPRBT) :: ZAOA, ZSOA
-    INTEGER(KIND=JPIM) :: KMLOC, KM, ISL, JGL, JK, IGLS
-    INTEGER(KIND=JPIB) :: OFFSET1, OFFSET2
+    INTEGER(KIND=JPIM) :: KMLOC, KM, ISL, JGL, JK, IGLS, JKP, INJK
+    INTEGER(KIND=JPIB) :: OFFSET1, OFFSET2, IIN, IIN0
+
+    ! Field dimension strip-mined exactly as in TRLTOM_UNPACK_KERNEL, and for the same
+    ! reason: KMYMS(KMLOC), the KNDGLU(KM) behind it, both KNPNTGTB1 lookups and
+    ! KOFFSETS_GEMM1(KMLOC) are all invariant in JK, yet collapsed over (KMLOC,JGL,JK) they
+    ! are re-loaded for each of the 2*KF_LEG fields. The parallel index stays the unit-stride
+    ! component and the serial loop strides by the number of parallel positions, so lanes
+    ! still touch consecutive addresses at every step and the coalescing on PZOUT*/PFOUBUF_IN
+    ! is untouched. See that kernel for the measured tile-size sweep.
+    INJK = (2*KF_LEG+ITILE-1)/ITILE
 
 #ifdef OMPGPU
     ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
@@ -200,13 +214,15 @@ CONTAINS
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PZOUTS,PZOUTA,PZOUTS0,PZOUTA0,PFOUBUF_IN) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM1,KNPNTGTB1,KNDGLU) &
-    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(KOUT_STRIDES0,KOUT0_STRIDES0)
+    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA,JK,IIN,IIN0) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) &
+    !$OMP& FIRSTPRIVATE(KOUT_STRIDES0,KOUT0_STRIDES0,INJK)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(PRESENT) PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
+    !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(PRESENT) &
+    !$ACC&              PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA,JK,IIN,IIN0) &
     !$ACC&              PRESENT(KMYMS,KOFFSETS_GEMM1,KNPNTGTB1,KNDGLU) &
-    !$ACC&              FIRSTPRIVATE(KF_LEG,KOUT_STRIDES0,KOUT0_STRIDES0) &
+    !$ACC&              FIRSTPRIVATE(KF_LEG,KOUT_STRIDES0,KOUT0_STRIDES0,INJK) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -215,7 +231,7 @@ CONTAINS
 #endif
     DO KMLOC=1,KNUMP
       DO JGL=1,KNDGNH
-        DO JK=1,2*KF_LEG
+        DO JKP=1,INJK
           KM = KMYMS(KMLOC)
           ISL = KNDGNH-KNDGLU(KM)+1
           IF (JGL >= ISL) THEN
@@ -223,21 +239,27 @@ CONTAINS
             IGLS = KNDGL+1-JGL
             OFFSET1 = 2_JPIB*KNPNTGTB1(KMLOC,JGL )*KF_LEG
             OFFSET2 = 2_JPIB*KNPNTGTB1(KMLOC,IGLS)*KF_LEG
+            IIN = (JGL-ISL)*KOUT_STRIDES0+KOFFSETS_GEMM1(KMLOC)*KOUT_STRIDES0
+            IIN0 = 1_JPIB+(JGL-1)*KOUT0_STRIDES0
+#ifdef ACCGPU
+            !$ACC LOOP SEQ
+#endif
+            DO JK=JKP,2*KF_LEG,INJK
+              IF(KM /= 0) THEN
+                ZSOA = PZOUTS(JK+IIN)
+                ZAOA = PZOUTA(JK+IIN)
+              ELSEIF (MOD((JK-1),2) == 0) THEN
+                ZSOA = PZOUTS0((JK-1)/2+IIN0)
+                ZAOA = PZOUTA0((JK-1)/2+IIN0)
+              ELSE
+                ! Imaginary values of KM=0 is zero, though I don't think we care
+                ZSOA = 0_JPRBT
+                ZAOA = 0_JPRBT
+              ENDIF
 
-            IF(KM /= 0) THEN
-              ZSOA = PZOUTS(JK+(JGL-ISL)*KOUT_STRIDES0+KOFFSETS_GEMM1(KMLOC)*KOUT_STRIDES0)
-              ZAOA = PZOUTA(JK+(JGL-ISL)*KOUT_STRIDES0+KOFFSETS_GEMM1(KMLOC)*KOUT_STRIDES0)
-            ELSEIF (MOD((JK-1),2) == 0) THEN
-              ZSOA = PZOUTS0((JK-1)/2+1+(JGL-1)*KOUT0_STRIDES0)
-              ZAOA = PZOUTA0((JK-1)/2+1+(JGL-1)*KOUT0_STRIDES0)
-            ELSE
-              ! Imaginary values of KM=0 is zero, though I don't think we care
-              ZSOA = 0_JPRBT
-              ZAOA = 0_JPRBT
-            ENDIF
-
-            PFOUBUF_IN(OFFSET1+JK) = ZAOA+ZSOA
-            PFOUBUF_IN(OFFSET2+JK) = ZSOA-ZAOA
+              PFOUBUF_IN(OFFSET1+JK) = ZAOA+ZSOA
+              PFOUBUF_IN(OFFSET2+JK) = ZSOA-ZAOA
+            ENDDO
           ENDIF
         ENDDO
       ENDDO

@@ -10,6 +10,15 @@
 !
 
 MODULE PRFI1B_MOD
+  USE PARKIND1, ONLY: JPIM
+
+  IMPLICIT NONE
+
+  ! Fields walked serially by one thread in PRFI1B_EXTRACT. Held to 2, not the 4 used by the
+  ! larger strip-mined kernels, because the strip-mined extent must stay at least one
+  ! wavefront wide. See the comment in PRFI1B_EXTRACT.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 2
+
   CONTAINS
   SUBROUTINE PRFI1B(PIA,PSPEC,KFIELDS,KDIM,KFLDPTR)
   
@@ -147,19 +156,40 @@ MODULE PRFI1B_MOD
   INTEGER(KIND=JPIM),INTENT(IN)    :: KNASM0(0:KNASM0_UB)
 
   INTEGER(KIND=JPIM) :: KM, KMLOC
-  INTEGER(KIND=JPIM) :: INM, JN, JFLD, IASM0
+  INTEGER(KIND=JPIM) :: INM, JN, JFLD, JFP, INJF, IASM0
+
+  ! Strip-mine the field loop. KM, IASM0 and INM depend only on KMLOC and JN, so collapsing
+  ! the field loop outright makes every field redo the KMYMS load, the dependent KNASM0 load
+  ! and the address arithmetic: four loads per element where two are useful. Walking ITILE
+  ! fields serially per thread loads them once per tile instead.
+  !
+  ! JFLD is unit-stride in both PSPEC(JFLD,...) and, through 2*JFLD, in PIA(2*JFLD-1,...), so
+  ! the parallel index has to stay unit-stride and the serial loop strides by INJF. Handing
+  ! each thread a contiguous block of fields instead would space the lanes ITILE apart and
+  ! lose the coalescing this kernel depends on.
+  !
+  ! INJF must not fall below the 64-lane wavefront. It is the innermost collapsed extent, so
+  ! once it is narrower than a wavefront the lanes of one wavefront straddle two values of JN,
+  ! which have unrelated INM and therefore land in unrelated parts of PSPEC. Every access then
+  ! splits in two and the extra cache traffic costs more than the hoisted loads save. At the
+  ! 137 fields this is called with, ITILE=4 leaves 35 and measured 1.06x, while ITILE=2 leaves
+  ! 69 and measures 1.17x. The same floor explains the tile sweep in trltom_pack_unpack.F90,
+  ! where the strip-mined extent is four times larger and ITILE=4 is therefore the right
+  ! choice: the rule is the largest ITILE that keeps the extent at or above 64, not a constant.
+  INJF = (KFIELDS+ITILE-1)/ITILE
 
 #ifdef OMPGPU
   !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) &
-  !$OMP& PRIVATE(KM,IASM0,INM) &
+  !$OMP& PRIVATE(KM,IASM0,INM,JFLD) &
   !$OMP& SHARED(PIA,PSPEC,KMYMS,KNASM0) &
   !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KNASM0) &
+  !$OMP& FIRSTPRIVATE(INJF) &
   !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELDS,KNUMP,KNSMAX)
 #endif
 #ifdef ACCGPU
-  !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IASM0,INM) &
+  !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IASM0,INM,JFLD) &
   !$ACC& PRESENT(PIA,PSPEC,KMYMS,KNASM0) &
-  !$ACC& FIRSTPRIVATE(KFIELDS,KDIM,KNUMP,KNSMAX) &
+  !$ACC& FIRSTPRIVATE(KFIELDS,KDIM,KNUMP,KNSMAX,INJF) &
 #ifndef _CRAYFTN
   !$ACC& ASYNC(1)
 #else
@@ -168,20 +198,35 @@ MODULE PRFI1B_MOD
 #endif
   DO KMLOC=1,KNUMP
     DO JN=0,KNSMAX+3
-      DO JFLD=1,KFIELDS
+      DO JFP=1,INJF
         KM = KMYMS(KMLOC)
 
         IF (JN <= 1) THEN
-            PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
-            PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+#ifdef ACCGPU
+            !$ACC LOOP SEQ
+#endif
+            DO JFLD=JFP,KFIELDS,INJF
+              PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
+              PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+            ENDDO
         ELSEIF (JN <= KNSMAX+2-KM) THEN
             IASM0 = KNASM0(KM)
             INM = IASM0+((KNSMAX+2-JN)-KM)*2
-            PIA(2*JFLD-1,JN+1,KMLOC) = PSPEC(JFLD,INM  )
-            PIA(2*JFLD  ,JN+1,KMLOC) = PSPEC(JFLD,INM+1)
+#ifdef ACCGPU
+            !$ACC LOOP SEQ
+#endif
+            DO JFLD=JFP,KFIELDS,INJF
+              PIA(2*JFLD-1,JN+1,KMLOC) = PSPEC(JFLD,INM  )
+              PIA(2*JFLD  ,JN+1,KMLOC) = PSPEC(JFLD,INM+1)
+            ENDDO
         ELSEIF (JN <= KNSMAX+3-KM) THEN
-            PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
-            PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+#ifdef ACCGPU
+            !$ACC LOOP SEQ
+#endif
+            DO JFLD=JFP,KFIELDS,INJF
+              PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
+              PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+            ENDDO
         ENDIF
         ENDDO
       ENDDO

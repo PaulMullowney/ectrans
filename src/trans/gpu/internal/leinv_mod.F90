@@ -439,22 +439,33 @@ CONTAINS
     INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
     INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
 
-    INTEGER(KIND=JPIM) :: KM, KMLOC, IA, JK, J
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IA, JK, J, IJMAX
+
+    ! J joins the parallel space rather than being walked serially. Its trip count
+    ! (KNSMAX-KM+2)/2 shrinks as m grows, so collapsed over (KMLOC,JK) alone a team that
+    ! draws high-m rows finishes immediately while one that draws m=0 works through
+    ! KNSMAX/2 iterations, and the kernel runs at the slowest team's pace. Covering the
+    ! full rectangle and guarding the short rows costs ~50% predicated-out threads and buys
+    ! a balanced grid KNSMAX/2 times larger, which is what fills the device.
+    IJMAX = (KNSMAX+2)/2
+#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
+    IJMAX = ALIGN(IJMAX,A)
+#endif
 
 #ifdef OMPGPU
     ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
     ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
-    !$OMP& PRIVATE(KM,IA,J) &
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
+    !$OMP& PRIVATE(KM,IA) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG,KNUMP) &
-    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
+    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IA,J) &
+    !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IA) &
     !$ACC& PRESENT(PIA,ZINP,ZINP0,KMYMS,KOFFSETS_GEMM2) &
-    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0) DEFAULT(NONE) &
+    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX) DEFAULT(NONE) &
 #ifdef _CRAYFTN
     !$ACC&
 #else
@@ -462,39 +473,31 @@ CONTAINS
 #endif
 #endif
     DO KMLOC=1,KNUMP
-      DO JK=1,2*KF_LEG
-        KM =  KMYMS(KMLOC)
-        IA  = 1+MOD(KNSMAX-KM+2,2)
-        IF(KM /= 0)THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX-KM+2)/2
-            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IA+1+(J-1)*2,KMLOC)
-          ENDDO
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
+      DO J=1,IJMAX
+        DO JK=1,2*KF_LEG
+          KM =  KMYMS(KMLOC)
+          IA  = 1+MOD(KNSMAX-KM+2,2)
+          IF(KM /= 0)THEN
+            IF (J <= (KNSMAX-KM+2)/2) THEN
+              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IA+1+(J-1)*2,KMLOC)
+            ! those are only needed with tensor cores (zinp might contain NaNs!)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          !$ACC LOOP SEQ
-          DO J=(KNSMAX-KM+2)/2+1,ALIGN((KNSMAX-KM+2)/2,A)
-            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=0
-          ENDDO
+            ELSEIF (J <= ALIGN((KNSMAX-KM+2)/2,A)) THEN
+              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=0
 #endif
-        ELSEIF (MOD((JK-1),2) == 0) THEN
-          ! every other field is sufficient because Im(KM=0) == 0
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX+2)/2
-            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IA+1+(J-1)*2,KMLOC)
-          ENDDO
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
+            ENDIF
+          ELSEIF (MOD((JK-1),2) == 0) THEN
+            ! every other field is sufficient because Im(KM=0) == 0
+            IF (J <= (KNSMAX+2)/2) THEN
+              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IA+1+(J-1)*2,KMLOC)
+            ! those are only needed with tensor cores (zinp might contain NaNs!)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          !$ACC LOOP SEQ
-          DO J=(KNSMAX+2)/2+1,ALIGN((KNSMAX+2)/2,A)
-            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = 0
-          ENDDO
+            ELSEIF (J <= ALIGN((KNSMAX+2)/2,A)) THEN
+              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = 0
 #endif
-        ENDIF
+            ENDIF
+          ENDIF
+        ENDDO
       ENDDO
     ENDDO
   END SUBROUTINE LEINV_LOAD_ANTISYM
@@ -513,22 +516,29 @@ CONTAINS
     INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
     INTEGER(KIND=JPIB), INTENT(IN)    :: KOFFSETS_GEMM2(KNUMP+1)
 
-    INTEGER(KIND=JPIM) :: KM, KMLOC, IS, JK, J
+    INTEGER(KIND=JPIM) :: KM, KMLOC, IS, JK, J, IJMAX
+
+    ! J joins the parallel space, as in LEINV_LOAD_ANTISYM above. The symmetric half runs to
+    ! (KNSMAX-KM+3)/2, so the rectangle is one row taller.
+    IJMAX = (KNSMAX+3)/2
+#if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
+    IJMAX = ALIGN(IJMAX,A)
+#endif
 
 #ifdef OMPGPU
     ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
     ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
-    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2) &
-    !$OMP& PRIVATE(KM,IS,J) &
+    !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
+    !$OMP& PRIVATE(KM,IS) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG,KNUMP) &
-    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
+    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(2) PRIVATE(KM,IS,J) &
+    !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IS) &
     !$ACC& PRESENT(PIA,ZINP,ZINP0,KMYMS,KOFFSETS_GEMM2) &
-    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0) DEFAULT(NONE) &
+    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX) DEFAULT(NONE) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -536,38 +546,30 @@ CONTAINS
 #endif
 #endif
     DO KMLOC=1,KNUMP
-      DO JK=1,2*KF_LEG
-        KM =  KMYMS(KMLOC)
-        IS  = 1+MOD(KNSMAX-KM+1,2)
-        IF(KM /= 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX-KM+3)/2
-            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IS+1+(J-1)*2,KMLOC)
-          ENDDO
+      DO J=1,IJMAX
+        DO JK=1,2*KF_LEG
+          KM =  KMYMS(KMLOC)
+          IS  = 1+MOD(KNSMAX-KM+1,2)
+          IF(KM /= 0) THEN
+            IF (J <= (KNSMAX-KM+3)/2) THEN
+              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IS+1+(J-1)*2,KMLOC)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
-          !$ACC LOOP SEQ
-          DO J=(KNSMAX-KM+3)/2+1,ALIGN((KNSMAX-KM+3)/2,A)
-            ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=0
-          ENDDO
+            ! those are only needed with tensor cores (zinp might contain NaNs!)
+            ELSEIF (J <= ALIGN((KNSMAX-KM+3)/2,A)) THEN
+              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=0
 #endif
-        ELSEIF (MOD((JK-1),2) == 0) THEN
-#ifdef ACCGPU
-          !$ACC LOOP SEQ
-#endif
-          DO J=1,(KNSMAX+3)/2
-            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IS+1+(J-1)*2,KMLOC)
-          ENDDO
-          ! those are only needed with tensor cores (zinp might contain NaNs!)
+            ENDIF
+          ELSEIF (MOD((JK-1),2) == 0) THEN
+            IF (J <= (KNSMAX+3)/2) THEN
+              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IS+1+(J-1)*2,KMLOC)
+            ! those are only needed with tensor cores (zinp might contain NaNs!)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
-          !$ACC LOOP SEQ
-          DO J=(KNSMAX+3)/2+1,ALIGN((KNSMAX+3)/2,A)
-            ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = 0
-          ENDDO
+            ELSEIF (J <= ALIGN((KNSMAX+3)/2,A)) THEN
+              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = 0
 #endif
-        ENDIF
+            ENDIF
+          ENDIF
+        ENDDO
       ENDDO
     ENDDO
   END SUBROUTINE LEINV_LOAD_SYM
