@@ -11,6 +11,7 @@
 
 MODULE TRMTOL_PACK_UNPACK
   USE BUFFERED_ALLOCATOR_MOD, ONLY: ALLOCATION_RESERVATION_HANDLE
+  USE PARKIND_ECTRANS,        ONLY: JPIM
   IMPLICIT NONE
 
   PRIVATE
@@ -23,6 +24,10 @@ MODULE TRMTOL_PACK_UNPACK
   TYPE TRMTOL_UNPACK_HANDLE
     TYPE(ALLOCATION_RESERVATION_HANDLE) :: HREEL
   END TYPE
+
+  ! Fields per thread in TRMTOL_PACK_KERNEL. Amortises the per-(KMLOC,JGL) invariant loads
+  ! over this many fields; see the comment at the kernel.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 4
 
 CONTAINS
   FUNCTION PREPARE_TRMTOL_PACK(ALLOCATOR,KF_LEG) RESULT(HTRMTOL_PACK)
@@ -107,8 +112,8 @@ CONTAINS
     !     LOCAL
     REAL(KIND=JPRBT) :: ZAOA, ZSOA
 
-    INTEGER(KIND=JPIM) :: KMLOC, KM, ISL, JGL, JK, IGLS
-    INTEGER(KIND=JPIB) :: OFFSET1, OFFSET2
+    INTEGER(KIND=JPIM) :: KMLOC, KM, ISL, JGL, JK, IGLS, JKP, INJK
+    INTEGER(KIND=JPIB) :: OFFSET1, OFFSET2, IIN, IIN0
     INTEGER(KIND=JPIM)  :: IOUT_STRIDES0
     INTEGER(KIND=JPIB)  :: IOUT_SIZE
     INTEGER(KIND=JPIM)  :: IOUT0_STRIDES0, IOUT0_SIZE
@@ -135,17 +140,20 @@ CONTAINS
     !$ACC&     PRESENT(ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,FOUBUF_IN,D_OFFSETS_GEMM1)
 #endif
 
+    ! Strip-mine the field loop. The index lookups do not depend on JK, and JK stays the
+    ! unit-stride parallel index so the streams stay coalesced.
+    INJK = (2*KF_LEG+ITILE-1)/ITILE
 #ifdef OMPGPU
     ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
     ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
     !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,FOUBUF_IN) &
-    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
-    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(IOUT_STRIDES0,IOUT0_STRIDES0)
+    !$OMP& PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA,JK,IIN,IIN0) &
+    !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG) FIRSTPRIVATE(IOUT_STRIDES0,IOUT0_STRIDES0,INJK)
 #endif
 #ifdef ACCGPU
-    !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA) &
-    !$ACC&              FIRSTPRIVATE(KF_LEG,IOUT_STRIDES0,IOUT0_STRIDES0) &
+    !$ACC PARALLEL LOOP COLLAPSE(3) DEFAULT(NONE) PRIVATE(KM,ISL,IGLS,OFFSET1,OFFSET2,ZAOA,ZSOA,JK,IIN,IIN0) &
+    !$ACC&              FIRSTPRIVATE(KF_LEG,IOUT_STRIDES0,IOUT0_STRIDES0,INJK) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -154,7 +162,7 @@ CONTAINS
 #endif
     DO KMLOC=1,D_NUMP
       DO JGL=1,R_NDGNH
-        DO JK=1,2*KF_LEG
+        DO JKP=1,INJK
           KM = D_MYMS(KMLOC)
           ISL = R_NDGNH-G_NDGLU(KM)+1
           IF (JGL >= ISL) THEN
@@ -162,21 +170,27 @@ CONTAINS
             IGLS = R_NDGL+1-JGL
             OFFSET1 = 2_JPIB*D_NPNTGTB1(KMLOC,JGL )*KF_LEG
             OFFSET2 = 2_JPIB*D_NPNTGTB1(KMLOC,IGLS)*KF_LEG
+            IIN = (JGL-ISL)*IOUT_STRIDES0+D_OFFSETS_GEMM1(KMLOC)*IOUT_STRIDES0
+            IIN0 = 1_JPIB+(JGL-1)*IOUT0_STRIDES0
+#ifdef ACCGPU
+            !$ACC LOOP SEQ
+#endif
+            DO JK=JKP,2*KF_LEG,INJK
+              IF(KM /= 0) THEN
+                ZSOA = ZOUTS(JK+IIN)
+                ZAOA = ZOUTA(JK+IIN)
+              ELSEIF (MOD((JK-1),2) == 0) THEN
+                ZSOA = ZOUTS0((JK-1)/2+IIN0)
+                ZAOA = ZOUTA0((JK-1)/2+IIN0)
+              ELSE
+                ! Imaginary values of KM=0 is zero, though I don't think we care
+                ZSOA = 0_JPRBT
+                ZAOA = 0_JPRBT
+              ENDIF
 
-            IF(KM /= 0) THEN
-              ZSOA = ZOUTS(JK+(JGL-ISL)*IOUT_STRIDES0+D_OFFSETS_GEMM1(KMLOC)*IOUT_STRIDES0)
-              ZAOA = ZOUTA(JK+(JGL-ISL)*IOUT_STRIDES0+D_OFFSETS_GEMM1(KMLOC)*IOUT_STRIDES0)
-            ELSEIF (MOD((JK-1),2) == 0) THEN
-              ZSOA = ZOUTS0((JK-1)/2+1+(JGL-1)*IOUT0_STRIDES0)
-              ZAOA = ZOUTA0((JK-1)/2+1+(JGL-1)*IOUT0_STRIDES0)
-            ELSE
-              ! Imaginary values of KM=0 is zero, though I don't think we care
-              ZSOA = 0_JPRBT
-              ZAOA = 0_JPRBT
-            ENDIF
-
-            FOUBUF_IN(OFFSET1+JK) = ZAOA+ZSOA
-            FOUBUF_IN(OFFSET2+JK) = ZSOA-ZAOA
+              FOUBUF_IN(OFFSET1+JK) = ZAOA+ZSOA
+              FOUBUF_IN(OFFSET2+JK) = ZSOA-ZAOA
+            ENDDO
           ENDIF
         ENDDO
       ENDDO

@@ -10,6 +10,14 @@
 !
 
 MODULE UPDSPB_MOD
+  USE PARKIND_ECTRANS, ONLY: JPIM
+
+  IMPLICIT NONE
+
+  ! Fields walked serially by one thread in UPDSPB_UPDATE. Held to 2 so the strip-mined extent
+  ! stays at least one wavefront wide; see the comment in PRFI1B_EXTRACT in prfi1b_mod.F90.
+  INTEGER(KIND=JPIM), PARAMETER :: ITILE = 2
+
   CONTAINS
   SUBROUTINE UPDSPB(KFIELD,POA,PSPEC,KFLDPTR)
   
@@ -72,7 +80,7 @@ MODULE UPDSPB_MOD
   
   !     LOCAL INTEGER SCALARS
   INTEGER(KIND=JPIM)  :: KM,KMLOC
-  INTEGER(KIND=JPIM) :: INM, IR, JFLD, JN, IASM0
+  INTEGER(KIND=JPIM) :: INM, IR, JFLD, JFP, INJF, JN, IASM0
   
   
   !     ------------------------------------------------------------------
@@ -105,12 +113,15 @@ MODULE UPDSPB_MOD
 
 ! Directive incomplete -> putting more variables in SHARED() triggers internal compiler error
 ! ftn-7991: INTERNAL COMPILER ERROR:  "Too few arguments on the stack"
+  ! Strip-mine the field loop. KM, NASM0 and INM depend only on KMLOC and JN.
+  INJF = (KFIELD+ITILE-1)/ITILE
 #ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM) &
-  !$OMP& SHARED(POA,PSPEC) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD)
+  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM,JFLD) &
+  !$OMP& SHARED(POA,PSPEC) FIRSTPRIVATE(INJF) ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD)
 #endif
 #ifdef ACCGPU
-  !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM) DEFAULT(NONE) COPYIN(KFIELD) &
+  !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM,JFLD) DEFAULT(NONE) COPYIN(KFIELD) &
+  !$ACC& FIRSTPRIVATE(INJF) &
 #ifndef _CRAYFTN
   !$ACC& ASYNC(1)
 #else
@@ -119,20 +130,30 @@ MODULE UPDSPB_MOD
 #endif
   DO KMLOC=1,D_NUMP
     DO JN=3,R_NTMAX+3
-      DO JFLD=1,KFIELD
+      DO JFP=1,INJF
         KM = D_MYMS(KMLOC)
         IASM0 = D_NASM0(KM)
 
         IF(KM /= 0 .AND. JN <= R_NTMAX+3-KM) THEN
         !(DO JN=3,R_NTMAX+3-KM)
           INM = IASM0+((R_NTMAX+3-JN)-KM)*2
-          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
-          PSPEC(JFLD,INM+1) = POA(2*JFLD  ,JN,KMLOC)
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO JFLD=JFP,KFIELD,INJF
+            PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
+            PSPEC(JFLD,INM+1) = POA(2*JFLD  ,JN,KMLOC)
+          ENDDO
         ELSEIF (KM == 0) THEN
           !(DO JN=3,R_NTMAX+3)
           INM = IASM0+(R_NTMAX+3-JN)*2
-          PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
-          PSPEC(JFLD,INM+1) = 0.0_JPRBT
+#ifdef ACCGPU
+          !$ACC LOOP SEQ
+#endif
+          DO JFLD=JFP,KFIELD,INJF
+            PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
+            PSPEC(JFLD,INM+1) = 0.0_JPRBT
+          ENDDO
         END IF
       ENDDO
     ENDDO
