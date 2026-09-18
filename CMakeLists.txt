@@ -132,6 +132,10 @@ include( ectrans_compiler_specific_directives )
 # OpenMP offload flags for the GPU targets only, keeping OpenMP_Fortran_FLAGS host-only.
 include( ectrans_omp_offload )
 
+# The PGP* gridpoint arrays of TRGTOL and TRLTOG are deliberately not covered by either
+# macro above. They take a plain MAP(ALLOC:...) on every compiler, which is neither of the
+# two expansions here, for reasons written out at the constructs that use them.
+
 ecbuild_add_option( FEATURE CUTLASS
                     DEFAULT OFF
                     CONDITION HAVE_GPU AND HAVE_CUDA AND CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC"
