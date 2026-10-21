@@ -564,8 +564,6 @@ CONTAINS
     ! see the longer note in TRGTOL for why neither HAS_DEVICE_ADDR nor the PRESENT modifier
     ! of ECTRANS_MAP_PRESENT_ALLOC can be used here. The D%NGP_* tables are mapped once in
     ! SETUP_TRANS, so they need no region either.
-
-    !$OMP TARGET DATA MAP(TO:IIN_TO_SEND_BUFR) IF(KF_FS > 0)
 #endif
 #ifdef ACCGPU
     !$ACC DATA IF(PRESENT(PGP))   PRESENT(PGP) ASYNC(1)
