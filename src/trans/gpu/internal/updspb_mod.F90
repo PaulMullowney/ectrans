@@ -19,7 +19,7 @@ MODULE UPDSPB_MOD
   INTEGER(KIND=JPIM), PARAMETER :: ITILE = 2
 
   CONTAINS
-  SUBROUTINE UPDSPB(KFIELD,POA,PSPEC,KFLDPTR)
+  SUBROUTINE UPDSPB(KFIELD,POA,KOFF,PSPEC,KFLDPTR)
   
   
   !**** *UPDSPB* - Update spectral arrays after direct Legendre transform
@@ -36,6 +36,7 @@ MODULE UPDSPB_MOD
   !        Explicit arguments :  KM - zonal wavenumber
   !        --------------------  KFIELD  - number of fields
   !                              POA - work array
+  !                              KOFF - offset of the first field in POA's leading dimension
   !                              PSPEC - spectral array
   
   !        Implicit arguments :  None
@@ -74,7 +75,10 @@ MODULE UPDSPB_MOD
   IMPLICIT NONE
   
   INTEGER(KIND=JPIM),INTENT(IN)  :: KFIELD
-  REAL(KIND=JPRBT)  ,INTENT(IN)  :: POA(:,:,:)
+  ! The whole LTDIR work array, not a field section, so that it reaches UPDSPB_UPDATE as an
+  ! explicit-shape dummy; KOFF selects the fields.
+  REAL(KIND=JPRBT)  ,INTENT(IN)  ,CONTIGUOUS :: POA(:,:,:)
+  INTEGER(KIND=JPIM),INTENT(IN)  :: KOFF
   ! CONTIGUOUS so that handing PSPEC to the explicit-shape dummy of UPDSPB_UPDATE passes a base
   ! address. Without it the compiler must allow for a non-contiguous actual and would pack into a
   ! temporary, which would not be the storage the caller mapped MAP(FROM).
@@ -83,7 +87,7 @@ MODULE UPDSPB_MOD
   
   !     LOCAL INTEGER SCALARS
   ! Extents for the explicit-shape dummies of UPDSPB_UPDATE.
-  INTEGER(KIND=JPIM) :: ISPEC1, ISPEC2, INASM0_UB
+  INTEGER(KIND=JPIM) :: ISPEC1, ISPEC2, INASM0_UB, IPOA1, IPOA2, IPOA3
   
   
   !     ------------------------------------------------------------------
@@ -118,8 +122,12 @@ MODULE UPDSPB_MOD
   ISPEC2 = SIZE(PSPEC,2)
   INASM0_UB = UBOUND(D_NASM0,1)
 
-  CALL UPDSPB_UPDATE(POA,PSPEC,ISPEC1,ISPEC2,D_MYMS,D_NUMP,D_NASM0,INASM0_UB, &
-    &                KFIELD,R_NTMAX)
+  IPOA1 = SIZE(POA,1)
+  IPOA2 = SIZE(POA,2)
+  IPOA3 = SIZE(POA,3)
+
+  CALL UPDSPB_UPDATE(POA,IPOA1,IPOA2,IPOA3,KOFF,PSPEC,ISPEC1,ISPEC2,D_MYMS,D_NUMP,D_NASM0, &
+    &                INASM0_UB,KFIELD,R_NTMAX)
 
 #ifdef ACCGPU
   !$ACC END DATA
@@ -139,19 +147,19 @@ MODULE UPDSPB_MOD
   ! down. HAS_DEVICE_ADDR does not suppress it. Explicit-shape dummies are described by their
   ! extents, which travel as FIRSTPRIVATE scalars, so nothing has to be copied.
   !
-  ! POA is the exception. Every actual is a leading-dimension section of the LTDIR work arrays
-  ! (POA2(IFIRST+1:IFIRST+2*KF_UV,:,:) and POA1(IST:IEND,:,:)), which is not contiguous, and an
-  ! element of a non-contiguous array may not be sequence-associated with an explicit-shape dummy
-  ! (F2018 15.5.2.4). It stays assumed-shape and keeps its descriptor.
-  SUBROUTINE UPDSPB_UPDATE(POA,PSPEC,KSPEC1,KSPEC2,KMYMS,KNUMP,KNASM0,KNASM0_UB, &
-    &                      KFIELD,KNTMAX)
+  ! POA is the whole LTDIR work array rather than the field section being written back, since a
+  ! leading-dimension section is not contiguous and could not be passed explicit-shape. KOFF is
+  ! the section's offset in the leading dimension.
+  SUBROUTINE UPDSPB_UPDATE(POA,KPOA1,KPOA2,KPOA3,KOFF,PSPEC,KSPEC1,KSPEC2,KMYMS,KNUMP, &
+    &                      KNASM0,KNASM0_UB,KFIELD,KNTMAX)
   USE PARKIND_ECTRANS, ONLY: JPIM, JPRB, JPRBT
 
   IMPLICIT NONE
 
   INTEGER(KIND=JPIM),INTENT(IN)  :: KSPEC1, KSPEC2, KNUMP, KNASM0_UB
   INTEGER(KIND=JPIM),INTENT(IN)  :: KFIELD, KNTMAX
-  REAL(KIND=JPRBT)  ,INTENT(IN)  :: POA(:,:,:)
+  INTEGER(KIND=JPIM),INTENT(IN)  :: KPOA1, KPOA2, KPOA3, KOFF
+  REAL(KIND=JPRBT)  ,INTENT(IN)  :: POA(KPOA1,KPOA2,KPOA3)
   REAL(KIND=JPRB)   ,INTENT(OUT) :: PSPEC(KSPEC1,KSPEC2)
   INTEGER(KIND=JPIM),INTENT(IN)  :: KMYMS(KNUMP)
   ! D%NASM0 is allocated (0:R%NSMAX), and KM is 0 for the zonal mean, so the lower bound has to
@@ -178,13 +186,13 @@ MODULE UPDSPB_MOD
   !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) DEFAULT(ECTRANS_OMP_DEFAULT) PRIVATE(KM,IASM0,INM,JFLD) &
   !$OMP& SHARED(POA,PSPEC,KMYMS,KNASM0) &
   !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KNASM0) &
-  !$OMP& FIRSTPRIVATE(INJF) &
+  !$OMP& FIRSTPRIVATE(INJF,KOFF) &
   !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD,KNUMP,KNTMAX)
 #endif
 #ifdef ACCGPU
   !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IASM0,INM,JFLD) DEFAULT(NONE) COPYIN(KFIELD) &
   !$ACC& PRESENT(POA,PSPEC,KMYMS,KNASM0) &
-  !$ACC& FIRSTPRIVATE(KNUMP,KNTMAX,INJF) &
+  !$ACC& FIRSTPRIVATE(KNUMP,KNTMAX,INJF,KOFF) &
 #ifndef _CRAYFTN
   !$ACC& ASYNC(1)
 #else
@@ -204,8 +212,8 @@ MODULE UPDSPB_MOD
           !$ACC LOOP SEQ
 #endif
           DO JFLD=JFP,KFIELD,INJF
-            PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
-            PSPEC(JFLD,INM+1) = POA(2*JFLD  ,JN,KMLOC)
+            PSPEC(JFLD,INM)   = POA(KOFF+2*JFLD-1,JN,KMLOC)
+            PSPEC(JFLD,INM+1) = POA(KOFF+2*JFLD  ,JN,KMLOC)
           ENDDO
         ELSEIF (KM == 0) THEN
           !(DO JN=3,KNTMAX+3)
@@ -214,7 +222,7 @@ MODULE UPDSPB_MOD
           !$ACC LOOP SEQ
 #endif
           DO JFLD=JFP,KFIELD,INJF
-            PSPEC(JFLD,INM)   = POA(2*JFLD-1,JN,KMLOC)
+            PSPEC(JFLD,INM)   = POA(KOFF+2*JFLD-1,JN,KMLOC)
             PSPEC(JFLD,INM+1) = 0.0_JPRBT
           ENDDO
         END IF

@@ -372,7 +372,7 @@ CONTAINS
     CALL GSTATS(412,1)
 
     ! do the legendre transform
-    CALL LEINV(ALLOCATOR,POA1,ZOUT,ZOUT0,ZINPS,ZINPA,ZINPS0,ZINPA0,KF_FS)
+    CALL LEINV(ALLOCATOR,POA1,0,ZOUT,ZOUT0,ZINPS,ZINPA,ZINPS0,ZINPA0,KF_FS)
 
     !     ------------------------------------------------------------------
 

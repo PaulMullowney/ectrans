@@ -297,7 +297,7 @@ contains
       !$acc enter data create(pp) async(stream_act)
 #endif
 #ifdef OMPGPU
-      !$omp target enter data map(alloc:pp)
+      call omp_enter_alloc(pp, size(pp, kind=c_size_t))
 #endif
     enddo
   end subroutine
@@ -336,7 +336,7 @@ contains
       !$acc enter data copyin(pp) async(stream_act)
 #endif
 #ifdef OMPGPU
-      !$omp target enter data map(to:pp)
+      call omp_enter_to(pp, size(pp, kind=c_size_t))
 #endif
     enddo
   end subroutine
@@ -374,7 +374,7 @@ contains
       !$acc exit data copyout(pp) async(stream_act)
 #endif
 #ifdef OMPGPU
-      !$omp target exit data map(from:pp)
+      call omp_exit_from(pp, size(pp, kind=c_size_t))
 #endif
     enddo
   end subroutine
@@ -412,8 +412,37 @@ contains
       !$acc exit data delete(pp) async(stream_act)
 #endif
 #ifdef OMPGPU
-      !$omp target exit data map(delete:pp)
+      call omp_exit_delete(pp, size(pp, kind=c_size_t))
 #endif
     enddo
   end subroutine
+#ifdef OMPGPU
+  ! Mapping pp itself would also send its rank-1 descriptor to the device: amdflang
+  ! creates, copies and attaches 48 bytes on every enter and exit. An explicit-shape
+  ! dummy is described by its extent alone, so only the byte range is mapped.
+  subroutine omp_enter_alloc(a, n)
+    use iso_fortran_env, only: int32
+    integer(c_size_t), intent(in) :: n
+    integer(kind=int32), intent(inout) :: a(n)
+    !$omp target enter data map(alloc:a)
+  end subroutine
+  subroutine omp_enter_to(a, n)
+    use iso_fortran_env, only: int32
+    integer(c_size_t), intent(in) :: n
+    integer(kind=int32), intent(inout) :: a(n)
+    !$omp target enter data map(to:a)
+  end subroutine
+  subroutine omp_exit_from(a, n)
+    use iso_fortran_env, only: int32
+    integer(c_size_t), intent(in) :: n
+    integer(kind=int32), intent(inout) :: a(n)
+    !$omp target exit data map(from:a)
+  end subroutine
+  subroutine omp_exit_delete(a, n)
+    use iso_fortran_env, only: int32
+    integer(c_size_t), intent(in) :: n
+    integer(kind=int32), intent(inout) :: a(n)
+    !$omp target exit data map(delete:a)
+  end subroutine
+#endif
 end module
