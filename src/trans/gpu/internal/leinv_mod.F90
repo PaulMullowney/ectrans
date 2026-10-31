@@ -65,7 +65,7 @@ CONTAINS
     END ASSOCIATE
   END SUBROUTINE LEINV_STRIDES
 
-  SUBROUTINE LEINV(ALLOCATOR,PIA,ZINP,ZINP0,ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,KF_LEG)
+  SUBROUTINE LEINV(ALLOCATOR,PIA,KPIAOFF,ZINP,ZINP0,ZOUTS,ZOUTA,ZOUTS0,ZOUTA0,KF_LEG)
     !**** *LEINV* - Inverse Legendre transform.
 
     !     Purpose.
@@ -126,7 +126,10 @@ CONTAINS
 
     IMPLICIT NONE
 
-    REAL(KIND=JPRB),    INTENT(IN)  :: PIA(:,:,:)
+    ! The caller's whole work array; the fields to transform start KPIAOFF into its leading
+    ! dimension.
+    REAL(KIND=JPRB),    INTENT(IN)  ,CONTIGUOUS :: PIA(:,:,:)
+    INTEGER(KIND=JPIM), INTENT(IN)  :: KPIAOFF
     INTEGER(KIND=JPIM), INTENT(IN)  :: KF_LEG
     REAL(KIND=JPRBT), POINTER, INTENT(OUT) :: ZINP(:), ZOUTS(:), ZOUTA(:)
     REAL(KIND=JPRD), POINTER, INTENT(OUT) :: ZINP0(:), ZOUTS0(:), ZOUTA0(:)
@@ -192,10 +195,9 @@ CONTAINS
     ! (96 for rank-3 PIA) is still allocated, copied and freed per launch. The compute
     ! constructs that fill ZINP and ZINP0 therefore live in LEINV_LOAD_ANTISYM and
     ! LEINV_LOAD_SYM at the end of this module, whose dummies are explicit-shape and so carry
-    ! no descriptor at all. PIA still carries one, for the reason given there.
-    ! PIA is assumed-shape rather than a POINTER because both callers pass an array section,
-    ! but the section is taken from an allocator buffer in each case (LTINV_MOD's PIA and
-    ! LTDIRAD_MOD's POA1), so its base address is a device address like the rest.
+    ! no descriptor at all. PIA is the callers' whole allocator work array (LTINV_MOD's PIA,
+    ! LTDIRAD_MOD's POA1) with the field offset alongside, so it is contiguous and passes
+    ! explicit-shape as well; its base address is a device address like the rest.
     ! The GEMM calls below take their device addresses via USE_DEVICE_ADDR, as before.
     !$OMP TARGET DATA &
     !$OMP&              MAP(ECTRANS_MAP_PRESENT_ALLOC:D_MYMS,D_NUMP) &
@@ -220,7 +222,7 @@ CONTAINS
     !    DO=1,7/2+1 ... 1..4
     !       PIA_2=2+1+(1..4-1)*2 ...3+(0..3)*2 .... 3,5,7,9
 
-    CALL LEINV_LOAD_ANTISYM(PIA,ZINP_C(1),SIZE(ZINP,KIND=JPIB),ZINP0_C(1),SIZE(ZINP0), &
+    CALL LEINV_LOAD_ANTISYM(PIA,SIZE(PIA,1),SIZE(PIA,2),SIZE(PIA,3),KPIAOFF,ZINP_C(1),SIZE(ZINP,KIND=JPIB),ZINP0_C(1),SIZE(ZINP0), &
       &                     D_MYMS,D_OFFSETS_GEMM2,D_NUMP, &
       &                     KF_LEG,R_NSMAX,IIN_STRIDES0,IIN0_STRIDES0)
 
@@ -316,7 +318,7 @@ CONTAINS
     !    DO=1,5
     !       PIA_2=1+1+(1..5-1)*2 ...2+(0..4)*2 .... 2,4,6,8,10
 
-    CALL LEINV_LOAD_SYM(PIA,ZINP_C(1),SIZE(ZINP,KIND=JPIB),ZINP0_C(1),SIZE(ZINP0), &
+    CALL LEINV_LOAD_SYM(PIA,SIZE(PIA,1),SIZE(PIA,2),SIZE(PIA,3),KPIAOFF,ZINP_C(1),SIZE(ZINP,KIND=JPIB),ZINP0_C(1),SIZE(ZINP0), &
       &                 D_MYMS,D_OFFSETS_GEMM2,D_NUMP, &
       &                 KF_LEG,R_NSMAX,IIN_STRIDES0,IIN0_STRIDES0)
 
@@ -419,11 +421,8 @@ CONTAINS
   ! entry, copy 48-120 bytes, tear the entry down. HAS_DEVICE_ADDR does not suppress it.
   ! Explicit-shape dummies are described by their extents, which travel as FIRSTPRIVATE
   ! scalars, so nothing has to be copied.
-  ! PIA is the exception and keeps its descriptor: LEINV is also called from LTINV with a
-  ! rank-3 section of the field dimension, whose columns are strided by the parent leading
-  ! dimension. An explicit-shape dummy would need that leading dimension, which is not
-  ! recoverable from the section, so it would have to come from LEINV's callers.
-  SUBROUTINE LEINV_LOAD_ANTISYM(PIA,ZINP,KINP,ZINP0,KINP0, &
+  ! PIA is the whole work array; the fields start KOFF into its leading dimension.
+  SUBROUTINE LEINV_LOAD_ANTISYM(PIA,KPIA1,KPIA2,KPIA3,KOFF,ZINP,KINP,ZINP0,KINP0, &
     &                           KMYMS,KOFFSETS_GEMM2,KNUMP, &
     &                           KF_LEG,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
     IMPLICIT NONE
@@ -431,7 +430,8 @@ CONTAINS
     INTEGER(KIND=JPIB), INTENT(IN)    :: KINP
     INTEGER(KIND=JPIM), INTENT(IN)    :: KINP0, KNUMP
     INTEGER(KIND=JPIM), INTENT(IN)    :: KF_LEG, KNSMAX, KIN_STRIDES0, KIN0_STRIDES0
-    REAL(KIND=JPRB),    INTENT(IN)    :: PIA(:,:,:)
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KPIA1, KPIA2, KPIA3, KOFF
+    REAL(KIND=JPRB),    INTENT(IN)    :: PIA(KPIA1,KPIA2,KPIA3)
     REAL(KIND=JPRBT),   INTENT(INOUT) :: ZINP(KINP)
     REAL(KIND=JPRD),    INTENT(INOUT) :: ZINP0(KINP0)
     INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
@@ -458,12 +458,12 @@ CONTAINS
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG,KNUMP) &
-    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX)
+    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX,KOFF)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IA) &
     !$ACC& PRESENT(PIA,ZINP,ZINP0,KMYMS,KOFFSETS_GEMM2) &
-    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX) DEFAULT(NONE) &
+    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX,KOFF) DEFAULT(NONE) &
 #ifdef _CRAYFTN
     !$ACC&
 #else
@@ -477,7 +477,7 @@ CONTAINS
           IA  = 1+MOD(KNSMAX-KM+2,2)
           IF(KM /= 0)THEN
             IF (J <= (KNSMAX-KM+2)/2) THEN
-              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IA+1+(J-1)*2,KMLOC)
+              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(KOFF+JK,IA+1+(J-1)*2,KMLOC)
             ! those are only needed with tensor cores (zinp might contain NaNs!)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
             ELSEIF (J <= ALIGN((KNSMAX-KM+2)/2,A)) THEN
@@ -487,7 +487,7 @@ CONTAINS
           ELSEIF (MOD((JK-1),2) == 0) THEN
             ! every other field is sufficient because Im(KM=0) == 0
             IF (J <= (KNSMAX+2)/2) THEN
-              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IA+1+(J-1)*2,KMLOC)
+              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(KOFF+JK,IA+1+(J-1)*2,KMLOC)
             ! those are only needed with tensor cores (zinp might contain NaNs!)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
             ELSEIF (J <= ALIGN((KNSMAX+2)/2,A)) THEN
@@ -500,7 +500,7 @@ CONTAINS
     ENDDO
   END SUBROUTINE LEINV_LOAD_ANTISYM
 
-  SUBROUTINE LEINV_LOAD_SYM(PIA,ZINP,KINP,ZINP0,KINP0, &
+  SUBROUTINE LEINV_LOAD_SYM(PIA,KPIA1,KPIA2,KPIA3,KOFF,ZINP,KINP,ZINP0,KINP0, &
     &                       KMYMS,KOFFSETS_GEMM2,KNUMP, &
     &                       KF_LEG,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0)
     IMPLICIT NONE
@@ -508,7 +508,8 @@ CONTAINS
     INTEGER(KIND=JPIB), INTENT(IN)    :: KINP
     INTEGER(KIND=JPIM), INTENT(IN)    :: KINP0, KNUMP
     INTEGER(KIND=JPIM), INTENT(IN)    :: KF_LEG, KNSMAX, KIN_STRIDES0, KIN0_STRIDES0
-    REAL(KIND=JPRB),    INTENT(IN)    :: PIA(:,:,:)
+    INTEGER(KIND=JPIM), INTENT(IN)    :: KPIA1, KPIA2, KPIA3, KOFF
+    REAL(KIND=JPRB),    INTENT(IN)    :: PIA(KPIA1,KPIA2,KPIA3)
     REAL(KIND=JPRBT),   INTENT(INOUT) :: ZINP(KINP)
     REAL(KIND=JPRD),    INTENT(INOUT) :: ZINP0(KINP0)
     INTEGER(KIND=JPIM), INTENT(IN)    :: KMYMS(KNUMP)
@@ -531,12 +532,12 @@ CONTAINS
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZINP,ZINP0,PIA) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KOFFSETS_GEMM2) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_LEG,KNUMP) &
-    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX)
+    !$OMP& FIRSTPRIVATE(KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX,KOFF)
 #endif
 #ifdef ACCGPU
     !$ACC PARALLEL LOOP COLLAPSE(3) PRIVATE(KM,IS) &
     !$ACC& PRESENT(PIA,ZINP,ZINP0,KMYMS,KOFFSETS_GEMM2) &
-    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX) DEFAULT(NONE) &
+    !$ACC& FIRSTPRIVATE(KF_LEG,KNUMP,KNSMAX,KIN_STRIDES0,KIN0_STRIDES0,IJMAX,KOFF) DEFAULT(NONE) &
 #ifndef _CRAYFTN
     !$ACC& ASYNC(1)
 #else
@@ -550,7 +551,7 @@ CONTAINS
           IS  = 1+MOD(KNSMAX-KM+1,2)
           IF(KM /= 0) THEN
             IF (J <= (KNSMAX-KM+3)/2) THEN
-              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(JK,IS+1+(J-1)*2,KMLOC)
+              ZINP(JK+(J-1)*KIN_STRIDES0+KOFFSETS_GEMM2(KMLOC)*KIN_STRIDES0)=PIA(KOFF+JK,IS+1+(J-1)*2,KMLOC)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
             ! those are only needed with tensor cores (zinp might contain NaNs!)
             ELSEIF (J <= ALIGN((KNSMAX-KM+3)/2,A)) THEN
@@ -559,7 +560,7 @@ CONTAINS
             ENDIF
           ELSEIF (MOD((JK-1),2) == 0) THEN
             IF (J <= (KNSMAX+3)/2) THEN
-              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(JK,IS+1+(J-1)*2,KMLOC)
+              ZINP0((JK-1)/2+1+(J-1)*KIN0_STRIDES0) = PIA(KOFF+JK,IS+1+(J-1)*2,KMLOC)
             ! those are only needed with tensor cores (zinp might contain NaNs!)
 #if defined(USE_CUTLASS) && defined(USE_CUTLASS_3XTF32)
             ELSEIF (J <= ALIGN((KNSMAX+3)/2,A)) THEN
