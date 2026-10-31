@@ -180,6 +180,8 @@ integer(kind=jpim) :: nflevl
 ! sumpini
 integer(kind=jpim) :: isqr
 logical :: lsync_trans = .false. ! Barrier around each transposition exchange (--sync-trans)
+logical :: lgpnorms = .false. ! Grid-point norms of the 3D scalar fields after each step (--gpnorms)
+real(kind=jprb), allocatable :: zgpave(:), zgpmin(:), zgpmax(:)
 logical :: leq_regions = .true. ! Eq regions flag
 
 integer(kind=jpim) :: nproma = 0
@@ -229,6 +231,7 @@ real(kind=jprb), allocatable :: global_field(:,:)
 #include "gath_grid.h"
 #include "gath_spec.h"
 #include "specnorm.h"
+#include "gpnorm_trans.h"
 #include "abor1.intfb.h"
 #include "gstats_setup.intfb.h"
 #include "ec_meminfo.intfb.h"
@@ -250,7 +253,7 @@ call get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, nlev, l
   &                             luvder, luseflt, nopt_mem_tr, nproma, npromatr, verbosity, &
   &                             ldump_values, lprint_norms, lmeminfo, nprtrv, nprtrw, ncheck, &
   &                             lpinning, lfield_api, icall_mode, ldump_checksums, iters_checksums, &
-  &                             cchecksums_path, lalloperm, lpgp_on_gpu, lsync_trans)
+  &                             cchecksums_path, lalloperm, lpgp_on_gpu, lsync_trans, lgpnorms)
 if (iters_checksums < 0) then
   if (iters_warmup > 0) then
     iters_checksums = iters_warmup
@@ -848,6 +851,23 @@ do jstep = 1, iters+iters_warmup
 
   ztstep(jstep) = (timef() - ztstep(jstep))/1000.0_jprd
 
+  if (lgpnorms) then
+    if (.not. allocated(zgpave)) allocate(zgpave(nflevg), zgpmin(nflevg), zgpmax(nflevg))
+    if (icall_mode == 1) then
+      call gpnorm_trans(zgp(:,1:nflevg,:), nflevg, nproma, zgpave, zgpmin, zgpmax, .false., &
+        &               kresol=1, lpgp_on_gpu=lpgp_on_gpu)
+    else
+      call gpnorm_trans(zgp3a(:,:,1,:), nflevg, nproma, zgpave, zgpmin, zgpmax, .false., &
+        &               kresol=1, lpgp_on_gpu=lpgp_on_gpu)
+    endif
+    if (jstep == 1 .and. myproc == 1) then
+      do jlev = 1, nflevg, max(1, nflevg/2)
+        write(nout,'("gpnorm step 1 level ",i4," ave ",es23.15," min ",es23.15," max ",es23.15)') &
+          &  jlev, zgpave(jlev), zgpmin(jlev), zgpmax(jlev)
+      enddo
+    endif
+  endif
+
   !=================================================================================================
   ! Print norms
   !=================================================================================================
@@ -1329,6 +1349,8 @@ subroutine print_help(unit)
    & buffers (default = off, when enabled equivalent to LALLOPERM=.FALSE.)"
   write(nout, "(a)") "    --keep-pgp-arrays-on-device  Keep PGP arrays on the GPU (default = off;&
    & cannot be enabled with --dump-values nor --dump-checksums)"
+  write(nout, "(a)") "    --gpnorms           Call GPNORM_TRANS on the 3D scalar fields after each&
+   & inverse transform, outside the timed region, as the IFS does for its norm diagnostics"
   write(nout, "(a)") ""
   write(nout, "(a)") "DEBUGGING"
   write(nout, "(a)") "    --dump-values             Output gridpoint fields in unformatted binary file"
@@ -1359,7 +1381,7 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
   &                                   verbosity, ldump_values, lprint_norms, lmeminfo, nprtrv, &
   &                                   nprtrw, ncheck, lpinning, lfield_api, icall_mode, ldump_checksums, &
   &                                   iters_checksums, &
-  &                                   cchecksums_path, lalloperm, lpgp_on_gpu, lsync_trans)
+  &                                   cchecksums_path, lalloperm, lpgp_on_gpu, lsync_trans, lgpnorms)
 
 #ifdef _OPENACC
   use openacc, only: acc_init, acc_get_device_type
@@ -1401,6 +1423,7 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
   logical, intent(inout) :: lsync_trans                ! Barrier before and after each exchange, so
                                                        ! the GSTATS regions separate compute from
                                                        ! communication
+  logical, intent(inout) :: lgpnorms                   ! call GPNORM_TRANS after each step
   character(len=128) :: carg          ! Storage variable for command line arguments
   integer            :: iarg          ! Argument index
 
@@ -1473,6 +1496,7 @@ subroutine get_command_line_arguments(nsmax, cgrid, iters, iters_warmup, nfld, n
       case('--deallocate-foubuf-temps'); lalloperm = .false.
       case('--keep-pgp-arrays-on-device'); lpgp_on_gpu = .true.
       case('--sync-trans'); lsync_trans = .true.
+      case('--gpnorms'); lgpnorms = .true.
       case default
         call parsing_failed("Unrecognised argument: " // trim(carg))
 

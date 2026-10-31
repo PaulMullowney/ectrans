@@ -52,7 +52,7 @@ SUBROUTINE GPNORM_TRANS(PGP,KFIELDS,KPROMA,PAVE,PMIN,PMAX,LDAVE_ONLY,KRESOL,LPGP
 
 !     ------------------------------------------------------------------
 
-USE PARKIND1,        ONLY: JPIM, JPRB, JPRD
+USE PARKIND1,        ONLY: JPIM, JPIB, JPRB, JPRD
 USE PARKIND_ECTRANS, ONLY: JPRBT
 
 !ifndef INTERFACE
@@ -107,6 +107,7 @@ INTEGER(KIND=JPIM),ALLOCATABLE :: IVSETG(:,:)
 REAL(KIND=JPRBT) :: V
 REAL(KIND=JPRD) :: ZPAVE_SUM
 REAL(KIND=JPRBT), POINTER :: PREEL_REAL(:)
+REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: PREEL_REAL_C(:)
 REAL(KIND=JPRD),ALLOCATABLE :: ZAVE(:,:)
 REAL(KIND=JPRBT),ALLOCATABLE :: ZMINGL(:,:)
 REAL(KIND=JPRBT),ALLOCATABLE :: ZMAXGL(:,:)
@@ -218,10 +219,6 @@ LGPNORM=.FALSE.
 IBEG=1
 IEND=D%NDGL_FS
 
-#ifdef OMPGPU
-!$OMP TARGET DATA MAP(ALLOC:ZAVE,ZMINGL,ZMAXGL,ZMINGPN,ZMAXGPN,ZAVEG,ZMING,ZMAXG) &
-!$OMP& MAP(TO:IVSETS,IVSETG) MAP(ALLOC:F_RW,D_NSTAGTF,D_NPTRLS,G_NLOEN)
-#endif
 #ifdef ACCGPU
 !$ACC DATA CREATE(ZAVE,ZMINGL,ZMAXGL,ZMINGPN,ZMAXGPN,ZAVEG,ZMING,ZMAXG) &
 !$ACC& COPYIN(IVSETS,IVSETG) PRESENT(F_RW,D_NSTAGTF,D_NPTRLS,G_NLOEN)
@@ -230,17 +227,17 @@ IEND=D%NDGL_FS
 CALL GSTATS(1429,0)
 IF (IF_FS > 0) THEN
 
-! PREEL_REAL is only meaningfully device-mapped when IF_FS > 0
 #ifdef OMPGPU
-  !$OMP TARGET DATA MAP(ALLOC:PREEL_REAL) IF (IF_FS > 0)
-#endif
+  PREEL_REAL_C => PREEL_REAL
+  CALL GPNORM_LAT_STATS(PREEL_REAL_C, SIZE(PREEL_REAL,KIND=JPIB), IF_FS, IEND, R%NDGL, &
+    &                   D_NPTRLS(MYSETW), D_NSTAGTF, G_NLOEN, F_RW, ZAVE, ZMINGPN, ZMAXGPN)
+#else
+
+! PREEL_REAL is only meaningfully device-mapped when IF_FS > 0
 #ifdef ACCGPU
   !$ACC DATA PRESENT(PREEL_REAL) IF (IF_FS > 0)
 #endif
 
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
   !$ACC KERNELS
 #endif
@@ -253,9 +250,6 @@ IF (IF_FS > 0) THEN
 #endif
 
   ! First compute average, minimum, and maximum for each field and latitude line
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL,V)
-#endif
 #ifdef ACCGPU
   !$ACC KERNELS
 #endif
@@ -279,9 +273,6 @@ IF (IF_FS > 0) THEN
 #endif
 
   ! Then compute minimum and maximum for each field across all latitude lines
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
   !$ACC KERNELS
 #endif
@@ -294,9 +285,6 @@ IF (IF_FS > 0) THEN
 #endif
 
   ! Compute the average for each field and latitude line, weighted by Gaussian weights
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
   !$ACC KERNELS
 #endif
@@ -310,22 +298,17 @@ IF (IF_FS > 0) THEN
   !$ACC END KERNELS
 #endif
 
-#ifdef OMPGPU
-  !$OMP END TARGET DATA
-#endif
 #ifdef ACCGPU
   !$ACC END DATA
 #endif
 
+#endif
 ENDIF ! IF_FS > 0
 
 CALL GSTATS(1429,1)
 
 ! Initialise global aggregate arrays
 
-#ifdef OMPGPU
-!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(2)
-#endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP COLLAPSE(2)
 #endif
@@ -335,9 +318,6 @@ DO JF=1,KFIELDS
   ENDDO
 ENDDO
 
-#ifdef OMPGPU
-!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP
 #endif
@@ -347,9 +327,6 @@ DO JF=1,KFIELDS
 ENDDO
 
 ! Put my average data in ZAVEG
-#ifdef OMPGPU
-!$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
 !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -362,14 +339,8 @@ ENDDO
 
 ! If local mins / maxs are provided by user, just load them into the work arrays
 IF (LDAVE_ONLY) THEN
-#ifdef OMPGPU
-  !$OMP TARGET DATA MAP(TO:PMIN,PMAX)
-#endif
 #ifdef ACCGPU
   !$ACC DATA COPYIN(PMIN,PMAX)
-#endif
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
 #endif
 #ifdef ACCGPU
   !$ACC KERNELS
@@ -381,17 +352,11 @@ IF (LDAVE_ONLY) THEN
 #ifdef ACCGPU
   !$ACC END KERNELS
 #endif
-#ifdef OMPGPU
-  !$OMP END TARGET DATA
-#endif
 #ifdef ACCGPU
   !$ACC END DATA
 #endif
 ! Else take my locally computed values and fill the corresponding sections of ZMING / ZMAXG
 ELSE ! LDAVE_ONLY
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
   !$ACC KERNELS
 #endif
@@ -421,16 +386,10 @@ IF (MYSETV==1) THEN
     IF (ILEN > 0) THEN
       ALLOCATE(ZRCV(ILEN))
       CALL SET2PE(IPROC,0,0,MYSETW,JSETV)
-#ifdef OMPGPU
-      !$OMP TARGET DATA MAP(ALLOC:ZRCV)
-#endif
 #ifdef ACCGPU
       !$ACC DATA CREATE(ZRCV)
 #endif
 #ifdef USE_GPU_AWARE_MPI
-#ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(ZRCV)
-#endif
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(ZRCV)
 #endif
@@ -458,13 +417,7 @@ IF (MYSETV==1) THEN
 #ifdef ACCGPU
       !$ACC END HOST_DATA
 #endif
-#ifdef OMPGPU
-      !$OMP END TARGET DATA
-#endif
 #else
-#ifdef OMPGPU
-      !$OMP TARGET UPDATE TO(ZRCV)
-#endif
 #ifdef ACCGPU
       !$ACC UPDATE DEVICE(ZRCV)
 #endif
@@ -473,9 +426,6 @@ IF (MYSETV==1) THEN
         CALL ABOR1('GPNORM_TRANS:ILENR /= ILEN')
       ENDIF
       IF (.NOT. LDAVE_ONLY) THEN
-#ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -488,9 +438,6 @@ IF (MYSETV==1) THEN
           ZMAXG(IVSETG(JSETV,JF))=REAL(ZRCV((JF-1)*(IEND+2)+IEND+2),JPRB)
         ENDDO
       ELSE ! .NOT. LDAVE_ONLY
-#ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -500,9 +447,6 @@ IF (MYSETV==1) THEN
             ZAVEG(IGL,IVSETG(JSETV,JF))=ZRCV((JF-1)*IEND+JGL)
           ENDDO
         ENDDO
-#ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP
 #endif
@@ -511,9 +455,6 @@ IF (MYSETV==1) THEN
           ZMAXG(JF)=MAX(ZMAXG(JF),REAL(ZRCV(IEND*IVSETS(JSETV)+2*(JF-1)+2),JPRB))
         ENDDO
       ENDIF
-#ifdef OMPGPU
-      !$OMP END TARGET DATA
-#endif
 #ifdef ACCGPU
       !$ACC END DATA
 #endif
@@ -531,16 +472,10 @@ ELSE ! MYSETV==1
   IF (ILEN > 0) THEN
     CALL SET2PE(IPROC,0,0,MYSETW,1)
     ALLOCATE(ZSND(ILEN))
-#ifdef OMPGPU
-    !$OMP TARGET DATA MAP(ALLOC:ZSND)
-#endif
 #ifdef ACCGPU
     !$ACC DATA CREATE(ZSND)
 #endif
     IF (.NOT. LDAVE_ONLY) THEN
-#ifdef OMPGPU
-      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
       !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -553,9 +488,6 @@ ELSE ! MYSETV==1
         ZSND((JF-1)*(IEND+2)+IEND+2)=ZMAXG(IVSETG(MYSETV,JF))
       ENDDO
     ELSE ! .NOT. LDAVE_ONLY
-#ifdef OMPGPU
-      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
       !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -565,9 +497,6 @@ ELSE ! MYSETV==1
           ZSND((JF-1)*IEND+JGL)=ZAVEG(IGL,IVSETG(MYSETV,JF))
         ENDDO
       ENDDO
-#ifdef OMPGPU
-      !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
       !$ACC PARALLEL LOOP
 #endif
@@ -577,16 +506,10 @@ ELSE ! MYSETV==1
       ENDDO
     ENDIF
 #ifdef USE_GPU_AWARE_MPI
-#ifdef OMPGPU
-    !$OMP TARGET DATA USE_DEVICE_ADDR(ZSND)
-#endif
 #ifdef ACCGPU
     !$ACC HOST_DATA USE_DEVICE(ZSND)
 #endif
 #else
-#ifdef OMPGPU
-    !$OMP TARGET UPDATE FROM(ZSND)
-#endif
 #ifdef ACCGPU
     !$ACC UPDATE HOST(ZSND)
 #endif
@@ -607,12 +530,6 @@ ELSE ! MYSETV==1
 #ifdef ACCGPU
     !$ACC END HOST_DATA
 #endif
-#ifdef OMPGPU
-    !$OMP END TARGET DATA
-#endif
-#endif
-#ifdef OMPGPU
-    !$OMP END TARGET DATA
 #endif
 #ifdef ACCGPU
     !$ACC END DATA
@@ -639,16 +556,10 @@ IF (MYSETV == 1) THEN
       IF (ILEN > 0) THEN
         ALLOCATE(ZRCV(ILEN))
         CALL SET2PE(IPROC,0,0,JSETW,1)
-#ifdef OMPGPU
-        !$OMP TARGET DATA MAP(ALLOC:ZRCV)
-#endif
 #ifdef ACCGPU
         !$ACC DATA CREATE(ZRCV)
 #endif
 #ifdef USE_GPU_AWARE_MPI
-#ifdef OMPGPU
-        !$OMP TARGET DATA USE_DEVICE_ADDR(ZRCV)
-#endif
 #ifdef ACCGPU
         !$ACC HOST_DATA USE_DEVICE(ZRCV)
 #endif
@@ -677,13 +588,7 @@ IF (MYSETV == 1) THEN
 #ifdef ACCGPU
         !$ACC END HOST_DATA
 #endif
-#ifdef OMPGPU
-        !$OMP END TARGET DATA
-#endif
 #else
-#ifdef OMPGPU
-        !$OMP TARGET UPDATE TO(ZRCV)
-#endif
 #ifdef ACCGPU
         !$ACC UPDATE DEVICE(ZRCV)
 #endif
@@ -692,9 +597,6 @@ IF (MYSETV == 1) THEN
           CALL ABOR1('GPNORM_TRANS:ILENR /= ILEN')
         ENDIF
         IF (.NOT. LDAVE_ONLY) THEN
-#ifdef OMPGPU
-          !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
           !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -707,9 +609,6 @@ IF (MYSETV == 1) THEN
             ZMAXG(JF)=MAX(ZMAXG(JF),REAL(ZRCV((JF-1)*(IEND+2)+IEND+2),JPRB))
           ENDDO
         ELSE
-#ifdef OMPGPU
-          !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
           !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -719,9 +618,6 @@ IF (MYSETV == 1) THEN
               ZAVEG(IGL,JF)=ZRCV((JF-1)*IEND+JGL)
             ENDDO
           ENDDO
-#ifdef OMPGPU
-          !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
           !$ACC PARALLEL LOOP
 #endif
@@ -730,9 +626,6 @@ IF (MYSETV == 1) THEN
             ZMAXG(JF)=MAX(ZMAXG(JF),REAL(ZRCV(IEND*KFIELDS+2*(JF-1)+2),JPRB))
           ENDDO
         ENDIF
-#ifdef OMPGPU
-        !$OMP END TARGET DATA
-#endif
 #ifdef ACCGPU
         !$ACC END DATA
 #endif
@@ -751,16 +644,10 @@ IF (MYSETV == 1) THEN
     IF (ILEN > 0) THEN
       CALL SET2PE(IPROC,0,0,1,1)
       ALLOCATE(ZSND(ILEN))
-#ifdef OMPGPU
-      !$OMP TARGET DATA MAP(ALLOC:ZSND)
-#endif
 #ifdef ACCGPU
       !$ACC DATA CREATE(ZSND)
 #endif
       IF (.NOT. LDAVE_ONLY) THEN
-#ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -773,9 +660,6 @@ IF (MYSETV == 1) THEN
           ZSND((JF-1)*(IEND+2)+IEND+2)=ZMAXG(JF)
         ENDDO
       ELSE
-#ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL)
-#endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP PRIVATE(IGL)
 #endif
@@ -785,9 +669,6 @@ IF (MYSETV == 1) THEN
             ZSND((JF-1)*IEND+JGL)=ZAVEG(IGL,JF)
           ENDDO
         ENDDO
-#ifdef OMPGPU
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO
-#endif
 #ifdef ACCGPU
         !$ACC PARALLEL LOOP
 #endif
@@ -797,16 +678,10 @@ IF (MYSETV == 1) THEN
         ENDDO
       ENDIF
 #ifdef USE_GPU_AWARE_MPI
-#ifdef OMPGPU
-      !$OMP TARGET DATA USE_DEVICE_ADDR(ZSND)
-#endif
 #ifdef ACCGPU
       !$ACC HOST_DATA USE_DEVICE(ZSND)
 #endif
 #else
-#ifdef OMPGPU
-      !$OMP TARGET UPDATE FROM(ZSND)
-#endif
 #ifdef ACCGPU
       !$ACC UPDATE HOST(ZSND)
 #endif
@@ -827,12 +702,6 @@ IF (MYSETV == 1) THEN
 #ifdef ACCGPU
       !$ACC END HOST_DATA
 #endif
-#ifdef OMPGPU
-      !$OMP END TARGET DATA
-#endif
-#endif
-#ifdef OMPGPU
-      !$OMP END TARGET DATA
 #endif
 #ifdef ACCGPU
       !$ACC END DATA
@@ -846,14 +715,8 @@ CALL GSTATS(815,1)
 
 ! Finally, load final values into output arrays, copying back to host at the end
 IF (MYSETW == 1 .AND. MYSETV == 1) THEN
-#ifdef OMPGPU
-  !$OMP TARGET DATA MAP(TOFROM:PAVE,PMIN,PMAX)
-#endif
 #ifdef ACCGPU
   !$ACC DATA COPY(PAVE,PMIN,PMAX)
-#endif
-#ifdef OMPGPU
-  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(ZPAVE_SUM)
 #endif
 #ifdef ACCGPU
   !$ACC PARALLEL LOOP PRIVATE(ZPAVE_SUM)
@@ -867,17 +730,11 @@ IF (MYSETW == 1 .AND. MYSETV == 1) THEN
     PMIN(JF)=ZMING(JF)
     PMAX(JF)=ZMAXG(JF)
   ENDDO
-#ifdef OMPGPU
-  !$OMP END TARGET DATA
-#endif
 #ifdef ACCGPU
   !$ACC END DATA
 #endif
 ENDIF
 
-#ifdef OMPGPU
-!$OMP END TARGET DATA
-#endif
 #ifdef ACCGPU
 !$ACC END DATA
 #endif
@@ -898,6 +755,64 @@ DEALLOCATE(ZAVE)
 IF (LHOOK) CALL DR_HOOK('GPNORM_TRANS',1,ZHOOK_HANDLE)
 
 !     ------------------------------------------------------------------
+
+#ifdef OMPGPU
+CONTAINS
+
+! Under OMPGPU only this first stage runs on the device: it reduces the transposed fields, which
+! are already there, to per-latitude averages and per-field extremes. The combination across
+! tasks that follows works on a few kB and runs on the host, so it needs no device maps.
+! All dummies are explicit-shape, so no array descriptor is mapped (see ES_MAP_MOD).
+SUBROUTINE GPNORM_LAT_STATS(PREEL, KREEL, KF, KEND, KNDGL, KIGL0, KNSTAGTF, KNLOEN, PRW, &
+  &                         PAVE_LAT, PMINF, PMAXF)
+  INTEGER(KIND=JPIB), INTENT(IN)  :: KREEL
+  INTEGER(KIND=JPIM), INTENT(IN)  :: KF, KEND, KNDGL, KIGL0
+  REAL(KIND=JPRBT),   INTENT(IN)  :: PREEL(KREEL)
+  INTEGER(KIND=JPIB), INTENT(IN)  :: KNSTAGTF(KEND+1)
+  INTEGER(KIND=JPIM), INTENT(IN)  :: KNLOEN(KNDGL)
+  REAL(KIND=JPRD),    INTENT(IN)  :: PRW(KNDGL)
+  REAL(KIND=JPRD),    INTENT(OUT) :: PAVE_LAT(KF,KNDGL)
+  REAL(KIND=JPRBT),   INTENT(OUT) :: PMINF(KF), PMAXF(KF)
+
+  REAL(KIND=JPRBT) :: ZMINL(KF,KEND), ZMAXL(KF,KEND)
+  REAL(KIND=JPRBT) :: ZV
+  INTEGER(KIND=JPIM) :: JGL, JF, JL, IGL
+
+  !$OMP TARGET DATA MAP(FROM:PAVE_LAT,PMINF,PMAXF) MAP(ALLOC:ZMINL,ZMAXL) &
+  !$OMP&            MAP(ECTRANS_MAP_PRESENT_ALLOC:KNSTAGTF,KNLOEN,PRW)
+
+  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(IGL,ZV,JF,JL) &
+  !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL) FIRSTPRIVATE(KF,KEND,KIGL0)
+  DO JGL=1,KEND
+    IGL = KIGL0 + JGL - 1
+    DO JF=1,KF
+      ZMINL(JF,JGL)=HUGE(1_JPRBT)
+      ZMAXL(JF,JGL)=-HUGE(1_JPRBT)
+      PAVE_LAT(JF,JGL)=0.0_JPRB
+      DO JL=1,KNLOEN(IGL)
+        ZV = PREEL(KF*KNSTAGTF(JGL)+(JF-1)*(KNSTAGTF(JGL+1)-KNSTAGTF(JGL))+JL)
+        PAVE_LAT(JF,JGL)=PAVE_LAT(JF,JGL)+ZV
+        ZMINL(JF,JGL)=MIN(ZMINL(JF,JGL),ZV)
+        ZMAXL(JF,JGL)=MAX(ZMAXL(JF,JGL),ZV)
+      ENDDO
+      PAVE_LAT(JF,JGL)=PAVE_LAT(JF,JGL)*PRW(IGL)/KNLOEN(IGL)
+    ENDDO
+  ENDDO
+
+  ! Starting from HUGE gives the same result as MINVAL/MAXVAL, also for KEND == 0.
+  !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO PRIVATE(JGL) FIRSTPRIVATE(KF,KEND)
+  DO JF=1,KF
+    PMINF(JF)=HUGE(PMINF)
+    PMAXF(JF)=-HUGE(PMAXF)
+    DO JGL=1,KEND
+      PMINF(JF)=MIN(PMINF(JF),ZMINL(JF,JGL))
+      PMAXF(JF)=MAX(PMAXF(JF),ZMAXL(JF,JGL))
+    ENDDO
+  ENDDO
+
+  !$OMP END TARGET DATA
+END SUBROUTINE GPNORM_LAT_STATS
+#endif
 
 !endif INTERFACE
 
