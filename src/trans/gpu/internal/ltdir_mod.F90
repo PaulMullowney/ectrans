@@ -78,6 +78,9 @@ CONTAINS
     USE TPM_STATS,              ONLY: GSTATS => GSTATS_NVTX
     USE BUFFERED_ALLOCATOR_MOD, ONLY: BUFFERED_ALLOCATOR, ASSIGN_PTR, GET_ALLOCATION
     USE ISO_C_BINDING,          ONLY: C_F_POINTER, C_LOC, C_SIZEOF
+#ifdef OMPGPU
+    USE ES_MAP_MOD,             ONLY: ES_ENTER_ALLOC, ES_EXIT_FROM
+#endif
 
     !**** *LTDIR* - Control of Direct Legendre transform step
 
@@ -161,7 +164,6 @@ CONTAINS
     ! the explicit-shape dummies of UVTVD (F2018 15.5.2.4). Both are whole-array views of
     ! an allocator slab, so they are contiguous.
     REAL(KIND=JPRB), POINTER, CONTIGUOUS :: POA1(:,:,:), POA2(:,:,:)
-    REAL(KIND=JPRB), POINTER :: PVOR(:,:,:), PDIV(:,:,:)
 
     ! Leading dimensions of POA1 and POA2, and the offset of each field slice within them.
     ! UVTVD takes the slices as explicit-shape dummies, which carry no descriptor and so
@@ -227,14 +229,20 @@ CONTAINS
     IALLOC_POS = IALLOC_POS + IALLOC_SZ
 
     ! do the legendre transform
-    CALL LEDIR(ALLOCATOR,ZINPS,ZINPA,ZINPS0,ZINPA0,ZOUT,ZOUT0,POA1,KF_FS)
+    CALL LEDIR(ALLOCATOR,ZINPS,ZINPA,ZINPS0,ZINPA0,ZOUT,ZOUT0,POA1,0,KF_FS)
 
 #ifdef OMPGPU
-    !$OMP TARGET DATA MAP(FROM:PSPVOR,PSPDIV) IF(KF_UV > 0 .AND. .NOT. LLPSP_ON_GPU)
-    !$OMP TARGET DATA MAP(FROM:PSPSCALAR) IF(PRESENT(PSPSCALAR) .AND. KF_SCALARS > 0 .AND. .NOT. LLPSP_ON_GPU)
-    !$OMP TARGET DATA MAP(FROM:PSPSC2) IF(NF_SC2 > 0 .AND. .NOT. LLPSP_ON_GPU)
-    !$OMP TARGET DATA MAP(FROM:PSPSC3A) IF(NF_SC3A > 0 .AND. .NOT. LLPSP_ON_GPU)
-    !$OMP TARGET DATA MAP(FROM:PSPSC3B) IF(NF_SC3B > 0 .AND. .NOT. LLPSP_ON_GPU)
+    ! Unstructured explicit-shape maps; see ES_MAP_MOD for why not MAP(FROM:PSPVOR,...).
+    IF (.NOT. LLPSP_ON_GPU) THEN
+      IF (KF_UV > 0) THEN
+        CALL ES_ENTER_ALLOC(PSPVOR)
+        CALL ES_ENTER_ALLOC(PSPDIV)
+      ENDIF
+      IF (PRESENT(PSPSCALAR) .AND. KF_SCALARS > 0) CALL ES_ENTER_ALLOC(PSPSCALAR)
+      IF (NF_SC2 > 0) CALL ES_ENTER_ALLOC(PSPSC2)
+      IF (NF_SC3A > 0) CALL ES_ENTER_ALLOC(PSPSC3A)
+      IF (NF_SC3B > 0) CALL ES_ENTER_ALLOC(PSPSC3B)
+    ENDIF
 #endif
 #ifdef ACCGPU
     !$ACC DATA COPYOUT(PSPVOR,PSPDIV) IF(KF_UV > 0 .AND. .NOT. LLPSP_ON_GPU)
@@ -258,18 +266,16 @@ CONTAINS
        ! Compute VOR and DIV ino POA2
        IFIRST = 0
        IVOROFF = IFIRST
-       PVOR => POA2(IFIRST+1:IFIRST+2*KF_UV,:,:)
        IFIRST = IFIRST + 2*KF_UV
        IDIVOFF = IFIRST
-       PDIV => POA2(IFIRST+1:IFIRST+2*KF_UV,:,:)
 
        ! Compute vorticity and divergence
        CALL UVTVD(KF_UV,IPOA1_LD,IPOA2_LD,POA1(IUOFF+1,1,1),POA1(IVOFF+1,1,1), &
          &        POA2(IVOROFF+1,1,1),POA2(IDIVOFF+1,1,1))
 
        ! Write back. Note, if we have UV, the contract says we *must* have VOR/DIV
-       CALL UPDSPB(KF_UV,PVOR,PSPVOR,KFLDPTRUV)
-       CALL UPDSPB(KF_UV,PDIV,PSPDIV,KFLDPTRUV)
+       CALL UPDSPB(KF_UV,POA2,IVOROFF,PSPVOR,KFLDPTRUV)
+       CALL UPDSPB(KF_UV,POA2,IDIVOFF,PSPDIV,KFLDPTRUV)
 
     ENDIF
     !     ------------------------------------------------------------------
@@ -294,11 +300,16 @@ CONTAINS
     ENDIF
     CALL GSTATS(412,0)
 #ifdef OMPGPU
-    !$OMP END TARGET DATA
-    !$OMP END TARGET DATA
-    !$OMP END TARGET DATA
-    !$OMP END TARGET DATA
-    !$OMP END TARGET DATA
+    IF (.NOT. LLPSP_ON_GPU) THEN
+      IF (KF_UV > 0) THEN
+        CALL ES_EXIT_FROM(PSPVOR)
+        CALL ES_EXIT_FROM(PSPDIV)
+      ENDIF
+      IF (PRESENT(PSPSCALAR) .AND. KF_SCALARS > 0) CALL ES_EXIT_FROM(PSPSCALAR)
+      IF (NF_SC2 > 0) CALL ES_EXIT_FROM(PSPSC2)
+      IF (NF_SC3A > 0) CALL ES_EXIT_FROM(PSPSC3A)
+      IF (NF_SC3B > 0) CALL ES_EXIT_FROM(PSPSC3B)
+    ENDIF
 #endif
 #ifdef ACCGPU
     !$ACC END DATA

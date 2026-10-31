@@ -20,7 +20,7 @@ MODULE PRFI1B_MOD
   INTEGER(KIND=JPIM), PARAMETER :: ITILE = 2
 
   CONTAINS
-  SUBROUTINE PRFI1B(PIA,PSPEC,KFIELDS,KDIM,KFLDPTR)
+  SUBROUTINE PRFI1B(PIA,KOFF,PSPEC,KFIELDS,KDIM,KFLDPTR)
   
   USE PARKIND1,        ONLY: JPIM, JPRB
   USE TPM_DIM,         ONLY: R
@@ -43,6 +43,7 @@ MODULE PRFI1B_MOD
   
   !        Explicit arguments :  KM     - zonal wavenumber
   !        ------------------    PIA    - spectral components for transform
+  !                              KOFF   - offset of the first field in PIA's leading dimension
   !                              PSPEC  - spectral array
   !                              KFIELDS  - number of fields
   
@@ -77,13 +78,16 @@ MODULE PRFI1B_MOD
   ! address. Without it the compiler must allow for a non-contiguous actual and would pack into a
   ! temporary, which would not be the storage the caller mapped.
   REAL(KIND=JPRB)   ,INTENT(IN)   ,CONTIGUOUS :: PSPEC(:,:)
-  REAL(KIND=JPRB)   ,INTENT(INOUT)  :: PIA(:,:,:)
+  ! The whole LTINV work array, not a field section, so that it reaches PRFI1B_EXTRACT as an
+  ! explicit-shape dummy; KOFF selects the fields.
+  REAL(KIND=JPRB)   ,INTENT(INOUT)  ,CONTIGUOUS :: PIA(:,:,:)
+  INTEGER(KIND=JPIM),INTENT(IN) :: KOFF
   INTEGER(KIND=JPIM),INTENT(IN) :: KDIM
   INTEGER(KIND=JPIM),INTENT(IN),OPTIONAL :: KFLDPTR(:)
   
   !     LOCAL INTEGER SCALARS
   ! Extents for the explicit-shape dummies of PRFI1B_EXTRACT.
-  INTEGER(KIND=JPIM) :: ISPEC1, INASM0_UB
+  INTEGER(KIND=JPIM) :: ISPEC1, INASM0_UB, IPIA1, IPIA2, IPIA3
   
   !     ------------------------------------------------------------------
   
@@ -110,8 +114,12 @@ MODULE PRFI1B_MOD
     ISPEC1 = SIZE(PSPEC,1)
     INASM0_UB = UBOUND(D_NASM0,1)
 
-    CALL PRFI1B_EXTRACT(PIA,PSPEC,ISPEC1,KDIM,D_MYMS,D_NUMP,D_NASM0,INASM0_UB, &
-      &                 KFIELDS,R_NSMAX)
+    IPIA1 = SIZE(PIA,1)
+    IPIA2 = SIZE(PIA,2)
+    IPIA3 = SIZE(PIA,3)
+
+    CALL PRFI1B_EXTRACT(PIA,IPIA1,IPIA2,IPIA3,KOFF,PSPEC,ISPEC1,KDIM,D_MYMS,D_NUMP,D_NASM0, &
+      &                 INASM0_UB,KFIELDS,R_NSMAX)
 
   ENDIF
 
@@ -134,19 +142,19 @@ MODULE PRFI1B_MOD
   ! down. HAS_DEVICE_ADDR does not suppress it. Explicit-shape dummies are described by their
   ! extents, which travel as FIRSTPRIVATE scalars, so nothing has to be copied.
   !
-  ! PIA is the exception. Every actual is a leading-dimension section of the LTINV work array
-  ! (PIA(IFIRST+1:IFIRST+2*KF_UV,:,:) and similar), which is not contiguous, and an element of a
-  ! non-contiguous array may not be sequence-associated with an explicit-shape dummy
-  ! (F2018 15.5.2.4). It stays assumed-shape and keeps its descriptor.
-  SUBROUTINE PRFI1B_EXTRACT(PIA,PSPEC,KSPEC1,KDIM,KMYMS,KNUMP,KNASM0,KNASM0_UB, &
-    &                       KFIELDS,KNSMAX)
+  ! PIA is the whole LTINV work array rather than the field section being filled, since a
+  ! leading-dimension section is not contiguous and could not be passed explicit-shape. KOFF is
+  ! the section's offset in the leading dimension.
+  SUBROUTINE PRFI1B_EXTRACT(PIA,KPIA1,KPIA2,KPIA3,KOFF,PSPEC,KSPEC1,KDIM,KMYMS,KNUMP, &
+    &                       KNASM0,KNASM0_UB,KFIELDS,KNSMAX)
   USE PARKIND1,        ONLY: JPIM, JPRB
 
   IMPLICIT NONE
 
   INTEGER(KIND=JPIM),INTENT(IN)    :: KSPEC1, KDIM, KNUMP, KNASM0_UB
   INTEGER(KIND=JPIM),INTENT(IN)    :: KFIELDS, KNSMAX
-  REAL(KIND=JPRB)   ,INTENT(INOUT) :: PIA(:,:,:)
+  INTEGER(KIND=JPIM),INTENT(IN)    :: KPIA1, KPIA2, KPIA3, KOFF
+  REAL(KIND=JPRB)   ,INTENT(INOUT) :: PIA(KPIA1,KPIA2,KPIA3)
   REAL(KIND=JPRB)   ,INTENT(IN)    :: PSPEC(KSPEC1,KDIM)
   INTEGER(KIND=JPIM),INTENT(IN)    :: KMYMS(KNUMP)
   ! D%NASM0 is allocated (0:R%NSMAX), and KM is 0 for the zonal mean, so the lower bound has to
@@ -181,13 +189,13 @@ MODULE PRFI1B_MOD
   !$OMP& PRIVATE(KM,IASM0,INM,JFLD) &
   !$OMP& SHARED(PIA,PSPEC,KMYMS,KNASM0) &
   !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KMYMS,KNASM0) &
-  !$OMP& FIRSTPRIVATE(INJF) &
+  !$OMP& FIRSTPRIVATE(INJF,KOFF) &
   !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELDS,KNUMP,KNSMAX)
 #endif
 #ifdef ACCGPU
   !$ACC PARALLEL LOOP DEFAULT(NONE) COLLAPSE(3) PRIVATE(KM,IASM0,INM,JFLD) &
   !$ACC& PRESENT(PIA,PSPEC,KMYMS,KNASM0) &
-  !$ACC& FIRSTPRIVATE(KFIELDS,KDIM,KNUMP,KNSMAX,INJF) &
+  !$ACC& FIRSTPRIVATE(KFIELDS,KDIM,KNUMP,KNSMAX,INJF,KOFF) &
 #ifndef _CRAYFTN
   !$ACC& ASYNC(1)
 #else
@@ -204,8 +212,8 @@ MODULE PRFI1B_MOD
             !$ACC LOOP SEQ
 #endif
             DO JFLD=JFP,KFIELDS,INJF
-              PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
-              PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+              PIA(KOFF+2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
+              PIA(KOFF+2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
             ENDDO
         ELSEIF (JN <= KNSMAX+2-KM) THEN
             IASM0 = KNASM0(KM)
@@ -214,16 +222,16 @@ MODULE PRFI1B_MOD
             !$ACC LOOP SEQ
 #endif
             DO JFLD=JFP,KFIELDS,INJF
-              PIA(2*JFLD-1,JN+1,KMLOC) = PSPEC(JFLD,INM  )
-              PIA(2*JFLD  ,JN+1,KMLOC) = PSPEC(JFLD,INM+1)
+              PIA(KOFF+2*JFLD-1,JN+1,KMLOC) = PSPEC(JFLD,INM  )
+              PIA(KOFF+2*JFLD  ,JN+1,KMLOC) = PSPEC(JFLD,INM+1)
             ENDDO
         ELSEIF (JN <= KNSMAX+3-KM) THEN
 #ifdef ACCGPU
             !$ACC LOOP SEQ
 #endif
             DO JFLD=JFP,KFIELDS,INJF
-              PIA(2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
-              PIA(2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
+              PIA(KOFF+2*JFLD-1,JN+1,KMLOC) = 0.0_JPRB
+              PIA(KOFF+2*JFLD  ,JN+1,KMLOC) = 0.0_JPRB
             ENDDO
         ENDIF
         ENDDO
