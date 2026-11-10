@@ -79,6 +79,13 @@ function( generate_api_test_suite )
       set( suffix "_${backend}" )
     endif()
 
+    set( offload_libs )
+    set( offload_definitions )
+    if( backend MATCHES "gpu" )
+      set( offload_libs $<${HAVE_ACC}:OpenACC::OpenACC_Fortran> $<${HAVE_OMP}:OpenMP::OpenMP_Fortran> )
+      set( offload_definitions ${GPU_OFFLOAD}GPU )
+    endif()
+
     # Create test suite driver executable encapsulating all tests for this suite at this precision
     create_test_sourcelist( _ ${suite_name}${suffix}.c ${tests} )
     ecbuild_add_executable( TARGET ${suite_name}${suffix}
@@ -88,14 +95,20 @@ function( generate_api_test_suite )
                                 ${CMAKE_CURRENT_SOURCE_DIR}/../util.F90
                                 ${CMAKE_CURRENT_SOURCE_DIR}/../fpe_trapping.cc
                             LINKER_LANGUAGE Fortran
-                            LIBS ${libs}
-                            DEFINITIONS HAVE_FEENABLEEXCEPT=${HAVE_FEENABLEEXCEPT} HAVE_FEDISABLEEXCEPT=${HAVE_FEDISABLEEXCEPT} )
+                            LIBS ${libs} ${offload_libs}
+                            DEFINITIONS HAVE_FEENABLEEXCEPT=${HAVE_FEENABLEEXCEPT} HAVE_FEDISABLEEXCEPT=${HAVE_FEDISABLEEXCEPT}
+                                        ${offload_definitions} )
 
     # Prevent the Fortran runtime from trying to provide a main program
     target_link_options( ${suite_name}${suffix} PRIVATE ${NO_FORTRAN_MAIN_FLAG} )
 
     ecbuild_target_fortran_module_directory( TARGET ${suite_name}${suffix}
         MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/module/${suite_name}${suffix} )
+
+    # GPU drivers may place their arrays on the device themselves (LPGP_ON_GPU, LPSP_ON_GPU)
+    if( backend MATCHES "gpu" )
+      ectrans_target_omp_offload( ${suite_name}${suffix} )
+    endif()
 
     # Add a test for each MPI x OpenMP configuration
     foreach( mpixomp ${mpixomps} )
@@ -147,5 +160,6 @@ endfunction( generate_api_test_suite )
 add_subdirectory( setup_trans0 )
 add_subdirectory( setup_trans )
 add_subdirectory( dir_trans )
+add_subdirectory( inv_trans )
 add_subdirectory( gpnorm_trans )
 add_subdirectory( vordiv_to_uv )
