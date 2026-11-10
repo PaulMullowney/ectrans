@@ -10,22 +10,6 @@
 ! nor does it submit to any jurisdiction.
 !
 
-! ECTRANS_OPTIONAL_MAP_WORKAROUND, set by cmake/ectrans_optional_map_workaround.cmake for
-! CCE, routes the four split-interface gridpoint arrays through local pointers in the pack
-! and unpack constructs below. See the comment at their declarations for why. Everywhere
-! else, and on every other compiler, these expand to the dummy arguments themselves.
-#if defined(ECTRANS_OPTIONAL_MAP_WORKAROUND) && defined(OMPGPU)
-#define ECTRANS_PGPUV ZPGPUV
-#define ECTRANS_PGP2  ZPGP2
-#define ECTRANS_PGP3A ZPGP3A
-#define ECTRANS_PGP3B ZPGP3B
-#else
-#define ECTRANS_PGPUV PGPUV
-#define ECTRANS_PGP2  PGP2
-#define ECTRANS_PGP3A PGP3A
-#define ECTRANS_PGP3B PGP3B
-#endif
-
 MODULE TRLTOG_MOD
   USE BUFFERED_ALLOCATOR_MOD, ONLY: ALLOCATION_RESERVATION_HANDLE
   USE PARKIND_ECTRANS,        ONLY: JPIM
@@ -144,8 +128,9 @@ CONTAINS
     USE TPM_TRANS,              ONLY: LDIVGP, LSCDERS, LUVDER, LVORGP, NPROMA
     USE BUFFERED_ALLOCATOR_MOD, ONLY: BUFFERED_ALLOCATOR, ASSIGN_PTR, GET_ALLOCATION
     USE ISO_C_BINDING,          ONLY: C_SIZEOF
+    USE ES_MAP_MOD,             ONLY: ES_STRIDED_VIEW
 #ifdef OMPGPU
-    USE ES_MAP_MOD,             ONLY: ES_ENTER_TO, ES_EXIT_RELEASE, ES_STRIDED_VIEW
+    USE ES_MAP_MOD,             ONLY: ES_ENTER_TO, ES_EXIT_RELEASE
     USE OMP_LIB,                ONLY: OMP_TARGET_IS_PRESENT, OMP_GET_DEFAULT_DEVICE
     USE ISO_C_BINDING,          ONLY: C_LOC
 #endif
@@ -161,23 +146,14 @@ CONTAINS
     INTEGER(KIND=JPIM),INTENT(IN)  :: KF_FS,KF_GP
     INTEGER(KIND=JPIM),INTENT(IN)  :: KF_UV_G, KF_SCALARS_G
     INTEGER(KIND=JPIM) ,OPTIONAL, INTENT(IN) :: KPTRGP(:)
-    ! CONTIGUOUS so that handing these to the explicit-shape dummies of TRLTOG_UNPACK_RECV
-    ! passes a base address. Without it the compiler must allow for a non-contiguous actual
-    ! and would pack into a temporary -- a host-side copy of device-resident data.
-#if defined(ECTRANS_OPTIONAL_MAP_WORKAROUND) && defined(OMPGPU)
-    ! TARGET as well, so the stand-in pointers below may be aimed at them.
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),TARGET :: PGP(:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS,TARGET :: PGPUV(:,:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS,TARGET :: PGP3A(:,:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS,TARGET :: PGP3B(:,:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS,TARGET :: PGP2(:,:,:)
-#else
+    ! Not CONTIGUOUS: callers pass sections of larger arrays, device-resident ones too under
+    ! LPGP_ON_GPU, and CONTIGUOUS would have them unpacked from a host temporary on return.
+    ! The kernels reach them through strided views instead; see ES_STRIDED_VIEW.
     REAL(KIND=JPRB),OPTIONAL,INTENT(OUT)     :: PGP(:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS :: PGPUV(:,:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS :: PGP3A(:,:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS :: PGP3B(:,:,:,:)
-    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT),CONTIGUOUS :: PGP2(:,:,:)
-#endif
+    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT)     :: PGPUV(:,:,:,:)
+    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT)     :: PGP3A(:,:,:,:)
+    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT)     :: PGP3B(:,:,:,:)
+    REAL(KIND=JPRB),OPTIONAL,INTENT(OUT)     :: PGP2(:,:,:)
     LOGICAL, OPTIONAL, INTENT(IN)            :: LPGP_ON_GPU
     INTEGER(KIND=JPIM) ,OPTIONAL, INTENT(IN) :: KVSETUV(:)
     INTEGER(KIND=JPIM) ,OPTIONAL, INTENT(IN) :: KVSETSC(:)
@@ -198,10 +174,12 @@ CONTAINS
     ! construction.
     REAL(KIND=JPRBT), POINTER, CONTIGUOUS :: ZPREEL_C(:),ZCOMBUFS_C(:),ZCOMBUFR_C(:)
 
-    ! Extents of the optional gridpoint arrays, so the unpack body can take them as
-    ! explicit-shape dummies. Left at 1 when the corresponding array is absent.
-    INTEGER(KIND=JPIM) :: IUV1,IUV2,IUV3,IUV4, IG21,IG22,IG23
-    INTEGER(KIND=JPIM) :: I3A1,I3A2,I3A3,I3A4, I3B1,I3B2,I3B3,I3B4
+    ! The split-interface gridpoint arrays as the contiguous span of each (possibly strided)
+    ! section plus its element strides, for the explicit-shape unpack dummies. A view is left
+    ! disassociated, and so absent in the kernels, when its array was not passed.
+    REAL(KIND=JPRB), POINTER, CONTIGUOUS :: ZPGPUV(:), ZPGP3A(:), ZPGP3B(:), ZPGP2(:)
+    INTEGER(KIND=JPIB) :: IUV_LEN, I3A_LEN, I3B_LEN, IG2_LEN
+    INTEGER(KIND=JPIB) :: IUV_S(4), I3A_S(4), I3B_S(4), IG2_S(3)
 
     LOGICAL :: LLOCAL_CONTRIBUTION
     INTEGER(KIND=JPIB) :: ISENDTOT (NPROC)
@@ -254,17 +232,13 @@ CONTAINS
     ! CCE 21's offload runtime segfaults in is_contiguous_dv while building the transfer
     ! list for the pack and unpack constructs: MAP(ALLOC:...) names all four split-interface
     ! gridpoint arrays, the caller routinely omits some of them, and the runtime walks the
-    ! absent one's null descriptor instead of skipping the item. Map these pointers instead,
-    ! aimed at the caller's arrays where supplied and at the one-element stand-ins where not,
-    ! so every item in the list carries a valid descriptor. The stand-ins are never read or
-    ! written: the IGP_OFFSETS dispatch inside the loops only ever selects an array the
-    ! caller actually passed. Dropping this workaround costs every call that omits an array,
-    ! which is all of call mode 2 and the partial-field field_view entry points.
-    REAL(KIND=JPRB), TARGET  :: ZSTANDIN3(1,1,1), ZSTANDIN4(1,1,1,1)
-    ! CONTIGUOUS for the same reason as the dummies they stand in for: these are what
-    ! reaches the explicit-shape arguments of TRLTOG_UNPACK_RECV.
-    REAL(KIND=JPRB), POINTER, CONTIGUOUS :: ZPGPUV(:,:,:,:), ZPGP3A(:,:,:,:), ZPGP3B(:,:,:,:)
-    REAL(KIND=JPRB), POINTER, CONTIGUOUS :: ZPGP2(:,:,:)
+    ! absent one's null descriptor instead of skipping the item. The views of omitted arrays
+    ! are aimed at this one-element stand-in instead, so every item in the list carries a
+    ! valid descriptor. The stand-in is never read or written: the IGP_OFFSETS dispatch
+    ! inside the loops only ever selects an array the caller actually passed. Dropping this
+    ! workaround costs every call that omits an array, which is all of call mode 2 and the
+    ! partial-field field_view entry points.
+    REAL(KIND=JPRB), TARGET  :: ZSTANDIN(1)
 #endif
 
 #ifdef USE_RAW_MPI
@@ -290,25 +264,6 @@ CONTAINS
     !              --------------------
     IF (LHOOK) CALL DR_HOOK('TRLTOG',0,ZHOOK_HANDLE)
 
-    ! Bounds of the optional gridpoint arrays, for the explicit-shape dummies of the
-    ! local-contribution and unpack kernels. Absent arrays get extent 1 so that the
-    ! dummy is still well formed; the callee guards every use with PRESENT.
-    IUV1=1; IUV2=1; IUV3=1; IUV4=1
-    IG21=1; IG22=1; IG23=1
-    I3A1=1; I3A2=1; I3A3=1; I3A4=1
-    I3B1=1; I3B2=1; I3B3=1; I3B4=1
-    IF (PRESENT(PGPUV)) THEN
-      IUV1=SIZE(PGPUV,1); IUV2=SIZE(PGPUV,2); IUV3=SIZE(PGPUV,3); IUV4=SIZE(PGPUV,4)
-    ENDIF
-    IF (PRESENT(PGP2)) THEN
-      IG21=SIZE(PGP2,1); IG22=SIZE(PGP2,2); IG23=SIZE(PGP2,3)
-    ENDIF
-    IF (PRESENT(PGP3A)) THEN
-      I3A1=SIZE(PGP3A,1); I3A2=SIZE(PGP3A,2); I3A3=SIZE(PGP3A,3); I3A4=SIZE(PGP3A,4)
-    ENDIF
-    IF (PRESENT(PGP3B)) THEN
-      I3B1=SIZE(PGP3B,1); I3B2=SIZE(PGP3B,2); I3B3=SIZE(PGP3B,3); I3B4=SIZE(PGP3B,4)
-    ENDIF
     ZPREEL_C => PREEL_REAL
 
     ! Note we have either
@@ -609,11 +564,20 @@ CONTAINS
          & STREAM=1)
 #endif
 
+    NULLIFY(ZPGPUV,ZPGP3A,ZPGP3B,ZPGP2)
+    IUV_LEN = 0; I3A_LEN = 0; I3B_LEN = 0; IG2_LEN = 0
+    IUV_S(:) = 0; I3A_S(:) = 0; I3B_S(:) = 0; IG2_S(:) = 0
+    IF (PRESENT(PGPUV)) CALL ES_STRIDED_VIEW(PGPUV,ZPGPUV,IUV_LEN,IUV_S(1),IUV_S(2),IUV_S(3),IUV_S(4))
+    IF (PRESENT(PGP3A)) CALL ES_STRIDED_VIEW(PGP3A,ZPGP3A,I3A_LEN,I3A_S(1),I3A_S(2),I3A_S(3),I3A_S(4))
+    IF (PRESENT(PGP3B)) CALL ES_STRIDED_VIEW(PGP3B,ZPGP3B,I3B_LEN,I3B_S(1),I3B_S(2),I3B_S(3),I3B_S(4))
+    IF (PRESENT(PGP2))  CALL ES_STRIDED_VIEW(PGP2,ZPGP2,IG2_LEN,IG2_S(1),IG2_S(2),IG2_S(3))
+    IF (MIN(IUV_LEN,I3A_LEN,I3B_LEN,IG2_LEN) < 0) &
+      & CALL ABORT_TRANS('TRLTOG: gridpoint array with a negative stride is not supported')
 #if defined(ECTRANS_OPTIONAL_MAP_WORKAROUND) && defined(OMPGPU)
-    IF (PRESENT(PGPUV)) THEN ; ZPGPUV => PGPUV ; ELSE ; ZPGPUV => ZSTANDIN4 ; ENDIF
-    IF (PRESENT(PGP3A)) THEN ; ZPGP3A => PGP3A ; ELSE ; ZPGP3A => ZSTANDIN4 ; ENDIF
-    IF (PRESENT(PGP3B)) THEN ; ZPGP3B => PGP3B ; ELSE ; ZPGP3B => ZSTANDIN4 ; ENDIF
-    IF (PRESENT(PGP2))  THEN ; ZPGP2  => PGP2  ; ELSE ; ZPGP2  => ZSTANDIN3 ; ENDIF
+    IF (.NOT. ASSOCIATED(ZPGPUV)) THEN ; ZPGPUV => ZSTANDIN ; IUV_LEN = 1 ; ENDIF
+    IF (.NOT. ASSOCIATED(ZPGP3A)) THEN ; ZPGP3A => ZSTANDIN ; I3A_LEN = 1 ; ENDIF
+    IF (.NOT. ASSOCIATED(ZPGP3B)) THEN ; ZPGP3B => ZSTANDIN ; I3B_LEN = 1 ; ENDIF
+    IF (.NOT. ASSOCIATED(ZPGP2))  THEN ; ZPGP2  => ZSTANDIN ; IG2_LEN = 1 ; ENDIF
 #endif
 
 #ifdef OMPGPU
@@ -887,10 +851,10 @@ CONTAINS
           &                       IFLDA,SIZE(IFLDA,1),SIZE(IFLDA,2), &
           &                       IGP_OFFSETS,KF_GP, &
           &                       D_NGP_A,D_NGP_B,D_NGP_STRIDE,SIZE(D_NGP_A), &
-          &                       ECTRANS_PGPUV,IUV1,IUV2,IUV3,IUV4, &
-          &                       ECTRANS_PGP2,IG21,IG22,IG23, &
-          &                       ECTRANS_PGP3A,I3A1,I3A2,I3A3,I3A4, &
-          &                       ECTRANS_PGP3B,I3B1,I3B2,I3B3,I3B4, &
+          &                       ZPGPUV,IUV_LEN,IUV_S(1),IUV_S(2),IUV_S(3),IUV_S(4), &
+          &                       ZPGP2,IG2_LEN,IG2_S(1),IG2_S(2),IG2_S(3), &
+          &                       ZPGP3A,I3A_LEN,I3A_S(1),I3A_S(2),I3A_S(3),I3A_S(4), &
+          &                       ZPGP3B,I3B_LEN,I3B_S(1),I3B_S(2),I3B_S(3),I3B_S(4), &
           &                       KF_FS,IRECV_WSET_SIZE_V,IRECV_WSET_OFFSET_V,IGP_V,NPROMA)
       ENDIF
       END ASSOCIATE
@@ -981,10 +945,10 @@ CONTAINS
         CALL TRLTOG_UNPACK_RECV(ZCOMBUFR_C(1),SIZE(ZCOMBUFR_C,KIND=JPIB), &
           &                     IFLDA,SIZE(IFLDA,1),SIZE(IFLDA,2), &
           &                     IGP_OFFSETS,KF_GP, &
-          &                     ECTRANS_PGPUV,IUV1,IUV2,IUV3,IUV4, &
-          &                     ECTRANS_PGP2,IG21,IG22,IG23, &
-          &                     ECTRANS_PGP3A,I3A1,I3A2,I3A3,I3A4, &
-          &                     ECTRANS_PGP3B,I3B1,I3B2,I3B3,I3B4, &
+          &                     ZPGPUV,IUV_LEN,IUV_S(1),IUV_S(2),IUV_S(3),IUV_S(4), &
+          &                     ZPGP2,IG2_LEN,IG2_S(1),IG2_S(2),IG2_S(3), &
+          &                     ZPGP3A,I3A_LEN,I3A_S(1),I3A_S(2),I3A_S(3),I3A_S(4), &
+          &                     ZPGP3B,I3B_LEN,I3B_S(1),I3B_S(2),I3B_S(3),I3B_S(4), &
           &                     IRECV_FIELD_COUNT_V,IRECV_WSET_SIZE_V, &
           &                     IRECV_WSET_OFFSET_V,ICOMBUFR_OFFSET_V,NPROMA,INR)
       ENDIF
@@ -1224,10 +1188,10 @@ CONTAINS
   ! frontend once combined with the device-address clauses (see ~/ecmwf/repro_use_device_addr).
   SUBROUTINE TRLTOG_UNPACK_RECV(ZCOMBUFR,KCOMBUFR,KFLDA,KFLDA1,KFLDA2, &
     &                           KGP_OFFSETS,KGP, &
-    &                           PGPUV,KUV1,KUV2,KUV3,KUV4, &
-    &                           PGP2,KG21,KG22,KG23, &
-    &                           PGP3A,K3A1,K3A2,K3A3,K3A4, &
-    &                           PGP3B,K3B1,K3B2,K3B3,K3B4, &
+    &                           PGPUV,KUV,KUVS1,KUVS2,KUVS3,KUVS4, &
+    &                           PGP2,KG2,KG2S1,KG2S2,KG2S3, &
+    &                           PGP3A,K3A,K3AS1,K3AS2,K3AS3,K3AS4, &
+    &                           PGP3B,K3B,K3BS1,K3BS2,K3BS3,K3BS4, &
     &                           KFIELD_COUNT,KWSET_SIZE,KWSET_OFFSET,KCOMBUFR_OFFSET, &
     &                           KNPROMA,KNR)
     USE PARKIND_ECTRANS, ONLY: JPIM, JPRB, JPRBT, JPIB
@@ -1240,14 +1204,17 @@ CONTAINS
     REAL(KIND=JPRBT),   INTENT(IN) :: ZCOMBUFR(KCOMBUFR)
     INTEGER(KIND=JPIB), INTENT(IN) :: KFLDA(KFLDA1,KFLDA2)
     INTEGER(KIND=JPIM), INTENT(IN) :: KGP_OFFSETS(KGP,3)
-    INTEGER(KIND=JPIM), INTENT(IN) :: KUV1,KUV2,KUV3,KUV4
-    INTEGER(KIND=JPIM), INTENT(IN) :: KG21,KG22,KG23
-    INTEGER(KIND=JPIM), INTENT(IN) :: K3A1,K3A2,K3A3,K3A4
-    INTEGER(KIND=JPIM), INTENT(IN) :: K3B1,K3B2,K3B3,K3B4
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGPUV(KUV1,KUV2,KUV3,KUV4)
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGP3A(K3A1,K3A2,K3A3,K3A4)
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGP3B(K3B1,K3B2,K3B3,K3B4)
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGP2(KG21,KG22,KG23)
+    ! The gridpoint arrays arrive as strided views (ES_STRIDED_VIEW): KUV/KG2/K3A/K3B are the
+    ! lengths of the spans, K*S1..K*S4 the element strides of each dimension. INOUT, as only
+    ! the elements of the sections are written and the rest of each span must survive.
+    INTEGER(KIND=JPIB), INTENT(IN) :: KUV,KUVS1,KUVS2,KUVS3,KUVS4
+    INTEGER(KIND=JPIB), INTENT(IN) :: KG2,KG2S1,KG2S2,KG2S3
+    INTEGER(KIND=JPIB), INTENT(IN) :: K3A,K3AS1,K3AS2,K3AS3,K3AS4
+    INTEGER(KIND=JPIB), INTENT(IN) :: K3B,K3BS1,K3BS2,K3BS3,K3BS4
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGPUV(KUV)
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGP3A(K3A)
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGP3B(K3B)
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGP2(KG2)
 
     INTEGER(KIND=JPIM), PARAMETER :: IGP_OFFSETS_UV=1, IGP_OFFSETS_GP2=2
     INTEGER(KIND=JPIM), PARAMETER :: IGP_OFFSETS_GP3A=3, IGP_OFFSETS_GP3B=4
@@ -1283,7 +1250,9 @@ CONTAINS
     !$OMP& PRIVATE(JK,JBLK,IFLD,JI) &
     !$OMP& SHARED(KFLDA,KGP_OFFSETS) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KFIELD_COUNT,KWSET_SIZE) &
-    !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KCOMBUFR_OFFSET,KNR) &
+    !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KCOMBUFR_OFFSET,KNR, &
+    !$OMP& KUVS1,KUVS2,KUVS3,KUVS4,KG2S1,KG2S2,KG2S3,K3AS1,K3AS2,K3AS3,K3AS4, &
+    !$OMP& K3BS1,K3BS2,K3BS3,K3BS4) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(ZCOMBUFR) &
     !$OMP& MAP(ALLOC:PGPUV,PGP2,PGP3A,PGP3B) &
     !$OMP& NOWAIT
@@ -1292,7 +1261,9 @@ CONTAINS
     !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(PRESENT) PRIVATE(JK,JBLK,IFLD,JI) &
     !$ACC&              NO_CREATE(PGPUV,PGP2,PGP3A,PGP3B) &
     !$ACC&              FIRSTPRIVATE(KNR,KFIELD_COUNT,KWSET_SIZE, &
-    !$ACC&              KWSET_OFFSET,KNPROMA,KCOMBUFR_OFFSET) ASYNC(1)
+    !$ACC&              KWSET_OFFSET,KNPROMA,KCOMBUFR_OFFSET, &
+    !$ACC&              KUVS1,KUVS2,KUVS3,KUVS4,KG2S1,KG2S2,KG2S3,K3AS1,K3AS2,K3AS3,K3AS4, &
+    !$ACC&              K3BS1,K3BS2,K3BS3,K3BS4) ASYNC(1)
 #endif
     DO JFLD=1,KFIELD_COUNT
       DO JL=1,KWSET_SIZE
@@ -1301,13 +1272,16 @@ CONTAINS
         IFLD=KFLDA(JFLD,1+KNR)
         JI = KCOMBUFR_OFFSET+(JFLD-1)*KWSET_SIZE+JL
         IF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_UV) THEN
-          PGPUV(JK,KGP_OFFSETS(IFLD,3),KGP_OFFSETS(IFLD,2),JBLK) = ZCOMBUFR(JI)
+          PGPUV((JK-1)*KUVS1+(KGP_OFFSETS(IFLD,3)-1)*KUVS2+(KGP_OFFSETS(IFLD,2)-1)*KUVS3 &
+          &   +(JBLK-1)*KUVS4+1) = ZCOMBUFR(JI)
         ELSEIF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_GP2) THEN
-          PGP2(JK,KGP_OFFSETS(IFLD,2),JBLK) = ZCOMBUFR(JI)
+          PGP2((JK-1)*KG2S1+(KGP_OFFSETS(IFLD,2)-1)*KG2S2+(JBLK-1)*KG2S3+1) = ZCOMBUFR(JI)
         ELSEIF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_GP3A) THEN
-          PGP3A(JK,KGP_OFFSETS(IFLD,3),KGP_OFFSETS(IFLD,2),JBLK) = ZCOMBUFR(JI)
+          PGP3A((JK-1)*K3AS1+(KGP_OFFSETS(IFLD,3)-1)*K3AS2+(KGP_OFFSETS(IFLD,2)-1)*K3AS3 &
+          &   +(JBLK-1)*K3AS4+1) = ZCOMBUFR(JI)
         ELSEIF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_GP3B) THEN
-          PGP3B(JK,KGP_OFFSETS(IFLD,3),KGP_OFFSETS(IFLD,2),JBLK) = ZCOMBUFR(JI)
+          PGP3B((JK-1)*K3BS1+(KGP_OFFSETS(IFLD,3)-1)*K3BS2+(KGP_OFFSETS(IFLD,2)-1)*K3BS3 &
+          &   +(JBLK-1)*K3BS4+1) = ZCOMBUFR(JI)
         ENDIF
       ENDDO
     ENDDO
@@ -1319,10 +1293,10 @@ CONTAINS
   SUBROUTINE TRLTOG_LOCAL_CONTRIB(PREEL_REAL,KPREEL,KFLDA,KFLDA1,KFLDA2, &
     &                             KGP_OFFSETS,KGP, &
     &                             KNGP_A,KNGP_B,KNGP_STRIDE,KNGP, &
-    &                             PGPUV,KUV1,KUV2,KUV3,KUV4, &
-    &                             PGP2,KG21,KG22,KG23, &
-    &                             PGP3A,K3A1,K3A2,K3A3,K3A4, &
-    &                             PGP3B,K3B1,K3B2,K3B3,K3B4, &
+    &                             PGPUV,KUV,KUVS1,KUVS2,KUVS3,KUVS4, &
+    &                             PGP2,KG2,KG2S1,KG2S2,KG2S3, &
+    &                             PGP3A,K3A,K3AS1,K3AS2,K3AS3,K3AS4, &
+    &                             PGP3B,K3B,K3BS1,K3BS2,K3BS3,K3BS4, &
     &                             KF_FS,KWSET_SIZE,KWSET_OFFSET,KGP_V,KNPROMA)
     USE PARKIND_ECTRANS, ONLY: JPIM, JPRB, JPRBT, JPIB
 
@@ -1335,14 +1309,17 @@ CONTAINS
     INTEGER(KIND=JPIB), INTENT(IN) :: KFLDA(KFLDA1,KFLDA2)
     INTEGER(KIND=JPIM), INTENT(IN) :: KGP_OFFSETS(KGP,3)
     INTEGER(KIND=JPIM), INTENT(IN) :: KNGP_A(KNGP), KNGP_B(KNGP), KNGP_STRIDE(KNGP)
-    INTEGER(KIND=JPIM), INTENT(IN) :: KUV1,KUV2,KUV3,KUV4
-    INTEGER(KIND=JPIM), INTENT(IN) :: KG21,KG22,KG23
-    INTEGER(KIND=JPIM), INTENT(IN) :: K3A1,K3A2,K3A3,K3A4
-    INTEGER(KIND=JPIM), INTENT(IN) :: K3B1,K3B2,K3B3,K3B4
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGPUV(KUV1,KUV2,KUV3,KUV4)
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGP3A(K3A1,K3A2,K3A3,K3A4)
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGP3B(K3B1,K3B2,K3B3,K3B4)
-    REAL(KIND=JPRB), OPTIONAL, INTENT(OUT) :: PGP2(KG21,KG22,KG23)
+    ! The gridpoint arrays arrive as strided views (ES_STRIDED_VIEW): KUV/KG2/K3A/K3B are the
+    ! lengths of the spans, K*S1..K*S4 the element strides of each dimension. INOUT, as only
+    ! the elements of the sections are written and the rest of each span must survive.
+    INTEGER(KIND=JPIB), INTENT(IN) :: KUV,KUVS1,KUVS2,KUVS3,KUVS4
+    INTEGER(KIND=JPIB), INTENT(IN) :: KG2,KG2S1,KG2S2,KG2S3
+    INTEGER(KIND=JPIB), INTENT(IN) :: K3A,K3AS1,K3AS2,K3AS3,K3AS4
+    INTEGER(KIND=JPIB), INTENT(IN) :: K3B,K3BS1,K3BS2,K3BS3,K3BS4
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGPUV(KUV)
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGP3A(K3A)
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGP3B(K3B)
+    REAL(KIND=JPRB), OPTIONAL, INTENT(INOUT) :: PGP2(KG2)
 
     INTEGER(KIND=JPIM), PARAMETER :: IGP_OFFSETS_UV=1, IGP_OFFSETS_GP2=2
     INTEGER(KIND=JPIM), PARAMETER :: IGP_OFFSETS_GP3A=3, IGP_OFFSETS_GP3B=4
@@ -1355,7 +1332,9 @@ CONTAINS
     !$OMP& SHARED(KFLDA,KGP_OFFSETS,KNGP_A,KNGP_B,KNGP_STRIDE) &
     !$OMP& MAP(ECTRANS_MAP_PRESENT_ALLOC:KNGP_A,KNGP_B,KNGP_STRIDE) &
     !$OMP& ECTRANS_LOOP_BOUNDS_CLAUSE(KF_FS,KWSET_SIZE) &
-    !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KGP_V) &
+    !$OMP& FIRSTPRIVATE(KNPROMA,KWSET_OFFSET,KGP_V, &
+    !$OMP& KUVS1,KUVS2,KUVS3,KUVS4,KG2S1,KG2S2,KG2S3,K3AS1,K3AS2,K3AS3,K3AS4, &
+    !$OMP& K3BS1,K3BS2,K3BS3,K3BS4) &
     !$OMP& ECTRANS_DEVICE_ADDR_CLAUSE(PREEL_REAL) &
     !$OMP& MAP(ALLOC:PGPUV,PGP2,PGP3A,PGP3B) &
     !$OMP& NOWAIT
@@ -1364,7 +1343,9 @@ CONTAINS
     !$ACC PARALLEL LOOP COLLAPSE(2) DEFAULT(PRESENT) PRIVATE(JK,JBLK,IFLD,IPOS) &
     !$ACC&              PRESENT(KNGP_A,KNGP_B,KNGP_STRIDE) &
     !$ACC&              NO_CREATE(PGPUV,PGP2,PGP3A,PGP3B) &
-    !$ACC&              FIRSTPRIVATE(KF_FS,KWSET_SIZE,KWSET_OFFSET,KGP_V,KNPROMA) ASYNC(1)
+    !$ACC&              FIRSTPRIVATE(KF_FS,KWSET_SIZE,KWSET_OFFSET,KGP_V,KNPROMA, &
+    !$ACC&              KUVS1,KUVS2,KUVS3,KUVS4,KG2S1,KG2S2,KG2S3,K3AS1,K3AS2,K3AS3,K3AS4, &
+    !$ACC&              K3BS1,K3BS2,K3BS3,K3BS4) ASYNC(1)
 #endif
     DO JFLD=1,KF_FS
       DO JL=1,KWSET_SIZE
@@ -1374,13 +1355,16 @@ CONTAINS
         IPOS = 1_JPIB*KF_FS*KNGP_A(KGP_V+JL)+KNGP_B(KGP_V+JL) &
             & +(JFLD-1)*KNGP_STRIDE(KGP_V+JL)+1
         IF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_UV) THEN
-          PGPUV(JK,KGP_OFFSETS(IFLD,3),KGP_OFFSETS(IFLD,2),JBLK) = PREEL_REAL(IPOS)
+          PGPUV((JK-1)*KUVS1+(KGP_OFFSETS(IFLD,3)-1)*KUVS2+(KGP_OFFSETS(IFLD,2)-1)*KUVS3 &
+          &   +(JBLK-1)*KUVS4+1) = PREEL_REAL(IPOS)
         ELSEIF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_GP2) THEN
-          PGP2(JK,KGP_OFFSETS(IFLD,2),JBLK) = PREEL_REAL(IPOS)
+          PGP2((JK-1)*KG2S1+(KGP_OFFSETS(IFLD,2)-1)*KG2S2+(JBLK-1)*KG2S3+1) = PREEL_REAL(IPOS)
         ELSEIF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_GP3A) THEN
-          PGP3A(JK,KGP_OFFSETS(IFLD,3),KGP_OFFSETS(IFLD,2),JBLK) = PREEL_REAL(IPOS)
+          PGP3A((JK-1)*K3AS1+(KGP_OFFSETS(IFLD,3)-1)*K3AS2+(KGP_OFFSETS(IFLD,2)-1)*K3AS3 &
+          &   +(JBLK-1)*K3AS4+1) = PREEL_REAL(IPOS)
         ELSEIF(KGP_OFFSETS(IFLD,1) == IGP_OFFSETS_GP3B) THEN
-          PGP3B(JK,KGP_OFFSETS(IFLD,3),KGP_OFFSETS(IFLD,2),JBLK) = PREEL_REAL(IPOS)
+          PGP3B((JK-1)*K3BS1+(KGP_OFFSETS(IFLD,3)-1)*K3BS2+(KGP_OFFSETS(IFLD,2)-1)*K3BS3 &
+          &   +(JBLK-1)*K3BS4+1) = PREEL_REAL(IPOS)
         ENDIF
       ENDDO
     ENDDO
