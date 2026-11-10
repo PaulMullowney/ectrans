@@ -270,6 +270,18 @@ foreach( benchmark ${benchmarks} )
               OMP ${omp}
           )
           ectrans_set_test_properties( ${test_name} )
+
+          # Same with blocking, vor/div and derivatives: the grid-point arguments of the
+          # transforms are then non-contiguous sections of device-resident arrays.
+          set( test_name ${base_title}_nfld10_nlev20_nproma16_vordiv_derivatives_pgp_on_gpu )
+          ecbuild_add_test( TARGET ${test_name}
+              COMMAND ${benchmark}
+              ARGS ${base_args} --nfld 10 --nlev 20 --nproma 16 --vordiv --scders --uvders
+                   --keep-pgp-arrays-on-device --check 100
+              MPI ${mpi}
+              OMP ${omp}
+          )
+          ectrans_set_test_properties( ${test_name} )
         endif()
 
         # Check it works with LALLOPERM=F (cpu only)
